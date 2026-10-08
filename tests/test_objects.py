@@ -24,7 +24,7 @@ os.chdir(ROOT)
 from sim6502 import Sim, fmt_diffs  # noqa: E402
 from zxref import Ref  # noqa: E402
 
-SP = '/private/tmp/claude-501/-Users-pauljohnson-RiderProjects-durell-turbo/a65fa3af-adea-44f5-8cea-a95a5e33ecf6/scratchpad'
+SP = os.environ.get('SP', 'build')       # optional Python model in $SP/work_R3
 MODEL = os.path.join(SP, 'work_R3')
 IGNORE = [(0x71D0, 0x7300), (0x74F7, 0x74FB)]
 

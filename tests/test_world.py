@@ -622,7 +622,7 @@ class Runner:
         if ptr_in:          # HL is a pointer into relocated memory
             v = self.z2o(smp.pre['hl'])
             sim.mem[sim.sym['zl']], sim.mem[sim.sym['zh']] = v & 0xFF, v >> 8
-        mpu.sp = 0xFF
+        mpu.sp = 0x7F
         mpu.stPushWord(STOP - 1)
         mpu.pc = sim.sym[target]
         mpu.a = smp.pre['af'] >> 8

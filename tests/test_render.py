@@ -173,7 +173,7 @@ def get_7ca1(fresh=False):
 # ---------------------------------------------------------------- running
 def run(sim, target, hooks=None, a=0, carry=0, max_cycles=5_000_000):
     mpu = sim.mpu
-    mpu.sp = 0xFF
+    mpu.sp = 0x7F
     mpu.stPushWord(STOP - 1)
     mpu.pc = sim.addr(target)
     mpu.a = a

@@ -40,9 +40,7 @@ def load_rom():
     return open(os.path.join(os.path.dirname(zx.__file__), 'roms', 'Spectrum48.rom'), 'rb').read()
 
 
-ORIC_ROM = os.environ.get('ORICROM', os.path.join(
-    '/private/tmp/claude-501/-Users-pauljohnson-RiderProjects-durell-turbo/'
-    'a65fa3af-adea-44f5-8cea-a95a5e33ecf6/scratchpad', 'oricutron', 'roms', 'basic11b.rom'))
+ORIC_ROM = os.environ.get('ORICROM')     # the Atmos ROM (basic11b.rom), for its font
 ORIC_FONT = None
 
 
@@ -50,7 +48,10 @@ def load_oric_font(path=None):
     """the Oric character set (chars 32-127) that the ROM's HIRES command
     copies to $9900; set as the model's ROM font"""
     global ORIC_FONT
-    ORIC_FONT = open(path or ORIC_ROM, 'rb').read()[0x3C78:0x3C78 + 768]
+    path = path or ORIC_ROM
+    if not path:
+        sys.exit('set ORICROM to the Oric Atmos ROM (basic11b.rom)')
+    ORIC_FONT = open(path, 'rb').read()[0x3C78:0x3C78 + 768]
     return ORIC_FONT
 
 

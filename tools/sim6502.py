@@ -26,13 +26,19 @@ STOP = 0x0300           # I/O page: never code; reaching it ends a call
 
 
 class Sim:
-    def __init__(self, binpath, lblpath=None):
+    def __init__(self, binpath, lblpath=None, keep_holes=False):
         self.mem = bytearray(0x10000)
         data = open(binpath, 'rb').read()
         self.mem[LOAD:LOAD + len(data)] = data
         if os.path.exists(binpath + '.ovl'):           # RAM under the ROM
             ovl = open(binpath + '.ovl', 'rb').read()
             self.mem[0xC000:0xC000 + len(ovl)] = ovl
+        if os.path.exists(binpath + '.hid'):           # tables at $9C00 (a disk blob)
+            hid = open(binpath + '.hid', 'rb').read()
+            self.mem[0x9C00:0x9C00 + len(hid)] = hid
+        rom = os.environ.get('ORICROM')                # the font HIRES leaves at $9900
+        if rom and os.path.exists(rom):
+            self.mem[0x9900:0x9900 + 768] = open(rom, 'rb').read()[0x3C78:0x3C78 + 768]
         self.sym = {}
         lblpath = lblpath or os.path.splitext(binpath)[0] + '.lbl'
         for line in open(lblpath):
@@ -45,6 +51,10 @@ class Sim:
                 zxa = int(name[3:], 16)
                 size = self.sym.get('ZVS_' + name[3:], 1)
                 self.zvars[zxa] = (v, size)
+        # Oric tables in the holes of the Spectrum range (turbo.cfg HOLE1/2):
+        # with keep_holes, kept when Spectrum state is loaded and not compared
+        self.holes = [(0x7300, 0x7300 + 0xDA), (0x7404, 0x7404 + 0xCF)] if keep_holes else []
+        self.hole_data = [bytes(self.mem[a:b]) for a, b in self.holes]
         self.mpu = MPU(memory=self.mem, pc=0)
         self.cycles = 0
         self.a = 0
@@ -75,6 +85,8 @@ class Sim:
     def load_state(self, zxmem, regs=None, ident=True, zvars=True):
         if ident:
             self.mem[ZX_LO:ZX_HI] = zxmem[ZX_LO:ZX_HI]
+            for (a, b), d in zip(self.holes, self.hole_data):
+                self.mem[a:b] = d
         if zvars:
             for zxa, (oa, n) in self.zvars.items():
                 self.mem[oa:oa + n] = zxmem[zxa:zxa + n]
@@ -116,7 +128,7 @@ class Sim:
     def call(self, target, a=None, rvals=(), max_cycles=20_000_000, carry=None):
         """JSR to target with an empty stack; returns cycles used."""
         mpu = self.mpu
-        mpu.sp = 0xFF
+        mpu.sp = 0x7F             # as the game: $0180.. is the city block
         ret = STOP - 1
         mpu.stPushWord(ret)
         mpu.pc = self.addr(target)
@@ -151,7 +163,7 @@ class Sim:
     # ----------------------------------------------------------------------
     def compare(self, zxmem, ident=True, zvars=True, ignore=()):
         """List of (spectrum_addr, spectrum_value, oric_value) that differ."""
-        ign = set()
+        ign = set(a for lo, hi in self.holes for a in range(lo, hi))
         for r in ignore:
             if isinstance(r, tuple):
                 ign.update(range(r[0], r[1]))

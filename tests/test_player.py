@@ -505,7 +505,7 @@ class Runner:
         sim = self.sim
         mpu = sim.mpu
         self.load(smp.pre_mem, smp.pre)
-        mpu.sp = 0xFF
+        mpu.sp = 0x7F
         mpu.stPushWord(STOP - 1)
         mpu.pc = sim.sym[target]
         mpu.a = smp.pre['af'] >> 8

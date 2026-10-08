@@ -25,8 +25,7 @@ os.chdir(ROOT)
 import gen_gfx as G          # noqa: E402
 from sim6502 import Sim, fmt_diffs  # noqa: E402
 
-SP = os.environ.get('SP', '/private/tmp/claude-501/-Users-pauljohnson-RiderProjects-durell-turbo/'
-                    'a65fa3af-adea-44f5-8cea-a95a5e33ecf6/scratchpad')
+SP = os.environ.get('SP', 'build')
 OUT = os.path.join(SP, 'work_gfx')
 TRAMP = 0xC000          # (free in the test build; HIBSS is at $9Dxx)
 QUICK = '--quick' in sys.argv

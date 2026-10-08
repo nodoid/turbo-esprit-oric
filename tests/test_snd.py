@@ -37,17 +37,20 @@ class Oric:
         self.m = harness.Machine()
         data = open('build/test_%s.bin' % name, 'rb').read()
         self.m.ram[0x600:0x600 + len(data)] = data
+        for ext, addr in (('menu', 0x5C00), ('hid', 0x9C00)):     # disk blobs (tunes, tables)
+            b = open('build/test_%s.bin.%s' % (name, ext), 'rb').read()
+            self.m.ram[addr:addr + len(b)] = b
         self.sym = {}
         for line in open('build/test_%s.lbl' % name):
             p = line.split()
             self.sym[p[2].lstrip('.')] = int(p[1], 16)
         self.mpu = MPU(memory=harness.Mem(self.m), pc=0)
-        self.mpu.sp = 0xFF
+        self.mpu.sp = 0x7F
         self.m.aylog = []
 
     def call(self, name, a=0, x=0, y=0, irq=False, maxc=5_000_000):
         mpu, m = self.mpu, self.m
-        mpu.sp = 0xFF
+        mpu.sp = 0x7F
         mpu.stPushWord(STOP - 1)
         mpu.pc = self.sym[name] if isinstance(name, str) else name
         mpu.a, mpu.x, mpu.y = a, x, y

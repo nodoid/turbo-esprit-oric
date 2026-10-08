@@ -32,7 +32,7 @@ def main():
     out = sys.argv[1] if len(sys.argv) > 1 else 'build/test_view'
     os.makedirs(out, exist_ok=True)
     os.system('python3 tools/buildtest.py view src/view.s data/view_data.s >/dev/null')
-    sim = Sim('build/test_view.bin')
+    sim = Sim('build/test_view.bin', keep_holes=True)   # its tables are in HOLE2
     sim.mem[0xBFDF] = 0x1E
     sim.call('view_init')
     total = bad = 0

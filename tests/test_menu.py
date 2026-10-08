@@ -170,7 +170,20 @@ class Oric:
     def reset(self):
         self.m = harness.Machine()
         self.m.ram[0x600:0x600 + len(self.data)] = self.data
-        self.m.ram[0x5B00:0x5B00 + 8382] = open('data/zxram.bin', 'rb').read()
+        zx = open('data/zxram.bin', 'rb').read()
+        self.m.ram[0x5B00:0x5B00 + 8382] = zx
+        self.blobs = b''
+        # the disk blobs (menu at $5C00 over the lane grid, overlay, $9C00)
+        for ext, addr in (('menu', 0x5C00), ('ovl', 0xC000), ('hid', 0x9C00)):
+            f = 'build/test_%s.bin.%s' % (self.name, ext)
+            if os.path.exists(f):
+                b = open(f, 'rb').read()
+                self.m.ram[addr:addr + len(b)] = b
+                self.blobs += b
+        self.cities = zx[0x686B - 0x5B00:0x6DB7 - 0x5B00]
+        rom = os.environ.get('ORICROM')     # the font HIRES leaves at $9900
+        if rom and os.path.exists(rom):
+            self.m.ram[0x9900:0x9900 + 768] = open(rom, 'rb').read()[0x3C78:0x3C78 + 768]
         self.mpu = MPU(memory=harness.Mem(self.m), pc=0)
         self.g = Gfx(self)
         self.m.aylog = []
@@ -185,7 +198,8 @@ class Oric:
             self.hooks[s['gfx_cls']] = self.h_a8eb
             self.hooks[s['gfx_attr_rows']] = self.h_rows
             self.hooks[s['gfx_recolour']] = self.h_recol
-        self.hooks[s['Z_7347']] = self.h_7347
+        self.hooks[s['play_game']] = self.h_7347
+        self.hooks[0x0530] = self.h_dread       # DREAD: only the city maps are read
         self.hooks[s['rnd_r']] = lambda: setattr(self.mpu, 'a', self.rnd.randrange(128))
         self.call('hw_init')
         # the default key table in Oric codes (to be in data/zxram.bin)
@@ -223,6 +237,12 @@ class Oric:
     def h_recol(self):
         self.g.attrs.append(('cols', self.mpu.a, self.mpu.x, self.mpu.y, self.zp('gfx_rc_row'), self.zp('gfx_rc_n')))
 
+    def h_dread(self):
+        r = self.m.ram
+        assert r[0x05F0] == 47 and r[0x05F1] == 1, 'unexpected DREAD request'
+        d = r[0x05F3] | r[0x05F4] << 8
+        r[d:d + len(self.cities)] = self.cities
+
     def h_7347(self):
         self.g.log.append(('game', chr(self.mpu.a), chr(self.zp('zc'))))
         if self.game:
@@ -237,7 +257,7 @@ class Oric:
 
     def call(self, name, a=0, x=0, y=0, stops=(), maxframes=3000, irq=True, push=()):
         mpu, m = self.mpu, self.m
-        mpu.sp = 0xFF
+        mpu.sp = 0x7F
         mpu.stPushWord(STOP - 1)
         for w in push:
             mpu.stPushWord(w)
@@ -362,7 +382,7 @@ ORIG_STREAMS = [(0xFD1D, 0xFD7C), (0xFA21, 0xFA90), (0xF876, 0xF88B), (0xF8D5, 0
 def t_streams(o):
     bad = 0
     for a, b in ORIG_STREAMS:
-        ok = bytes(M[a:b]) in o.data
+        ok = bytes(M[a:b]) in o.data or bytes(M[a:b]) in o.blobs
         bad += not ok
     print('  %d inline streams byte-identical to the original: %s' % (len(ORIG_STREAMS), 'ok' if not bad else '%d differ' % bad))
     return bad
@@ -612,15 +632,15 @@ def t_screens(o):
 
 
 def t_flow(o):
-    """FD11 -> city 2 -> menu (music) -> 7 PRACTICE -> game start; and
-    8 PLAY with the default skill."""
-    o.type_keys(['2', '7'], start=o.frame + 10, hold=4, gap=40)
-    pc = o.call('Z_FD11', stops=('Z_7347',), maxframes=200)
-    st = (pc == o.sym['Z_7347'], chr(o.mpu.a), chr(o.zp('zc')), o.m.ram[0x7611], o.zp('music_busy'),
+    """FD11 -> menu (music) -> 7 PRACTICE -> city 2 -> game start (Oric:
+    the city is chosen after PLAY/PRACTICE)."""
+    o.type_keys(['7', '2'], start=o.frame + 10, hold=4, gap=40)
+    pc = o.call('Z_FD11', stops=('play_game',), maxframes=200)
+    st = (pc == o.sym['play_game'], chr(o.mpu.a), chr(o.zp('zc')), o.m.ram[0x7611], o.zp('music_busy'),
           bytes(o.m.ram[o.sym['ZV_BACC']:][:16]).decode(), list(o.m.ram[0x7524:0x7524 + 6]))
     tunes = sum(1 for _, rg, v in o.m.aylog if rg == 8 and v > 0)
     ok = st[:5] == (True, '1', '1', 0, 0) and st[5] == 'GAMESBOROUGH MAP' and st[6] == [1, 1, 0, 7, 2, 0] and tunes > 0
-    print('  FD11 -> city 2 -> 7 PRACTICE: game(A=%r, C=%r) D7611=%d music stopped=%s title %r keys %s, menu music played: %s -> %s'
+    print('  FD11 -> 7 PRACTICE -> city 2: game(A=%r, C=%r) D7611=%d music stopped=%s title %r keys %s, menu music played: %s -> %s'
           % (st[1], st[2], st[3], st[4] == 0, st[5], st[6], tunes > 0, 'ok' if ok else 'FAIL'))
     return not ok
 
@@ -638,11 +658,10 @@ def t_render():
     def shot(name):
         w, h, img = harness.render(o.m.ram)
         harness.write_png(os.path.join(out, name + '.png'), w, h, img)
-    o.call('Z_FD11', stops=('Z_FD7C',), maxframes=100)
-    shot('city')
-    o.type_keys(['3'], start=o.frame + 10)
-    o.call('Z_FD7C', stops=('Z_FA90',), maxframes=200)
+    o.call('Z_FD11', stops=('Z_FA90',), maxframes=200)
     shot('menu')
+    o.call('choose_city', stops=('Z_FD7C',), maxframes=100)
+    shot('city')
     o.keys = []
     o.call('Z_F85D', stops=('Z_F8FF',), push=(o.sym['Z_FA1B'] - 1,), maxframes=200)
     shot('score')

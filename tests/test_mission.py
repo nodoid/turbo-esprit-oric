@@ -45,6 +45,7 @@ def build():
                 '        .include "zx.inc"\n        .data\n')
         for a, n in FAKEVARS.items():
             f.write('        ZVAR $%04X, %d\n' % (a, n))
+        f.write('        .exportzp frames\n        .zeropage\nframes: .res 1\n')
     r = subprocess.run([sys.executable, 'tools/buildtest.py', 'mission',
                         'src/mission.s', 'src/mapview.s', FAKE],
                        capture_output=True, text=True)
@@ -115,6 +116,15 @@ class ZSim(Sim):
         self.stubs = {self.sym[s]: s for s in stubs if s.startswith('Z_') and s in self.sym}
         self.z = z80.Z80Machine()
         self.foreign = {}
+        # $7300-$73D9 / $7404-$74D2 (the Spectrum main-loop code) hold Oric
+        # tables (segments RODATAH1/H2): not part of the shared Spectrum state
+        self.holes = []
+        for h, a, n in (('HOLE1', 0x7300, 0xDA), ('HOLE2', 0x7404, 0xCF)):
+            a = self.sym.get('__%s_START__' % h, a)
+            n = self.sym.get('__%s_SIZE__' % h, n)
+            self.holes.append((a, a + n))
+        self.hole_data = [bytes(self.mem[a:b]) for a, b in self.holes]
+        self.frames = self.sym.get('frames')
 
     def start(self, sample):
         self.world = bytearray(sample.pre_mem)
@@ -122,6 +132,8 @@ class ZSim(Sim):
         self.zsp = (sample.pre['sp'] - 0x20) & 0xFFFF
         self.foreign = {}
         self.load_state(sample.pre_mem, sample.pre)
+        for (a, b), d in zip(self.holes, self.hole_data):
+            self.mem[a:b] = d
 
     def _inport(self, port):
         if port & 1:
@@ -137,7 +149,10 @@ class ZSim(Sim):
         m, s, mem, mpu = self.z, self.sym, self.mem, self.mpu
         self.foreign[name] = self.foreign.get(name, 0) + 1
         w = self.world
+        keep = [bytes(w[a:b]) for a, b in self.holes]
         w[0x5B00:0x7BBE] = mem[0x5B00:0x7BBE]
+        for (a, b), d in zip(self.holes, keep):
+            w[a:b] = d
         for zxa, (oa, n) in self.zvars.items():
             w[zxa:zxa + n] = mem[oa:oa + n]
         ret6502 = (mem[0x100 + ((mpu.sp + 1) & 0xFF)] | mem[0x100 + ((mpu.sp + 2) & 0xFF)] << 8) + 1
@@ -182,7 +197,10 @@ class ZSim(Sim):
             m.clear_breakpoint(a)
         skip = m.pc - retz
         w[:] = bytes(m.memory)
+        keep = [bytes(mem[a:b]) for a, b in self.holes]
         mem[0x5B00:0x7BBE] = w[0x5B00:0x7BBE]
+        for (a, b), d in zip(self.holes, keep):
+            mem[a:b] = d
         for zxa, (oa, n) in self.zvars.items():
             mem[oa:oa + n] = w[zxa:zxa + n]
         main = {'bc': m.bc, 'de': m.de, 'hl': m.hl}
@@ -204,7 +222,7 @@ class ZSim(Sim):
 
     def call(self, target, a=None, max_steps=5_000_000):
         mpu = self.mpu
-        mpu.sp = 0xFF
+        mpu.sp = 0x7F
         mpu.stPushWord(STOP - 1)
         mpu.pc = self.addr(target)
         mpu.a = self.a if a is None else a
@@ -217,6 +235,9 @@ class ZSim(Sim):
                 continue
             mpu.step()
             steps += 1
+            if self.frames is not None and steps % 4000 == 0:
+                mem = self.mem               # the 50Hz interrupt (delay2)
+                mem[self.frames] = (mem[self.frames] + 1) & 0xFF
             if steps > max_steps:
                 raise RuntimeError('did not return (pc=%04X)' % mpu.pc)
         self.cycles = mpu.processorCycles - start
@@ -351,7 +372,7 @@ def fuzz(sim, pools, rng, rounds):
         fake.kbd = getattr(s, 'kbd', None)
         sim.start(fake)
         sim.call(label)
-        d = sim.compare(post, ignore=IGNORE)
+        d = sim.compare(post, ignore=IGNORE + sim.holes)
         if sim.foreign.get('Z_F422', 0) > 1:
             # the never-executed collision path with a junk grid pointer
             # (above $C000, not shared between the 6502 and the Z80 world)
@@ -440,7 +461,7 @@ def main():
                 sim.start(s)
                 try:
                     cyc = sim.call(label)
-                    d = sim.compare(s.post_mem, ignore=IGNORE)
+                    d = sim.compare(s.post_mem, ignore=IGNORE + sim.holes)
                 except Exception as e:      # noqa: BLE001
                     d = [('EXC', str(e))]
                     cyc = 0
