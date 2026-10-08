@@ -8,6 +8,7 @@
 
         .export hw_init, kbd_scan, ay_reg, ay_val, ay_set
         .export keys, frames, irq_hook
+        .export key_row, Z_F37A, any_key
         .import snd_tick
 
         .zeropage
@@ -149,3 +150,81 @@ kbd_scan:
         rts
 
 colmask: .byte $FE,$FD,$FB,$F7,$EF,$DF,$BF,$7F
+
+; ---------------------------------------------------------------------------
+; key_row: X = matrix row 0-7 -> A = columns held (bit set = key down).
+; Preserves X and Y.
+key_row:
+        php
+        sei
+        lda #14
+        jsr ay_reg
+        lda VIA_ORB
+        and #$F8
+        stx krow
+        ora krow
+        sta VIA_ORB
+        tya
+        pha
+        lda #0
+        sta kacc
+        ldy #7
+@col:   lda colmask,y
+        sta VIA_ORA
+        lda #$FD
+        sta VIA_PCR
+        lda #$DD
+        sta VIA_PCR
+        nop
+        nop
+        lda VIA_ORB
+        and #$08
+        cmp #$08
+        rol kacc
+        dey
+        bpl @col
+        pla
+        tay
+        lda kacc
+        plp
+        rts
+
+; Z_F37A: test the key described by the 3-byte key-table entry at (zl,zh):
+; byte 0 = Oric matrix row, byte 1 = column mask, byte 2 = 0.  (The Spectrum
+; table held port low/high + bit mask.)  On return zl,zh point at byte 2 as
+; on the Spectrum, and Z is set when the key is DOWN (A = 0), clear otherwise.
+.importzp zl, zh
+Z_F37A:
+        tya
+        pha
+        ldy #0
+        lda (zl),y
+        tax
+        jsr key_row
+        iny
+        and (zl),y              ; non-zero = down
+        sta kacc
+        clc
+        lda zl
+        adc #2
+        sta zl
+        bcc @nc
+        inc zh
+@nc:    pla
+        tay
+        lda kacc
+        beq @up
+        lda #0                  ; down: A = 0, Z set
+        rts
+@up:    lda #1                  ; up: A = 1, Z clear
+        rts
+
+; any_key: Z clear (A != 0) when any key is held
+any_key:
+        ldx #7
+@r:     jsr key_row
+        bne @yes
+        dex
+        bpl @r
+        lda #0
+@yes:   rts

@@ -11,7 +11,7 @@ OBJS    = $(patsubst src/%.s,$(BUILD)/%.o,$(SRCS))
 all: $(TAP)
 
 $(BUILD)/%.o: src/%.s $(wildcard src/*.inc) | $(BUILD)
-	$(AS) -g -I src -I data -o $@ $<
+	$(AS) -g -I src -I data --bin-include-dir data -o $@ $<
 
 $(BUILD)/turbo.bin: $(OBJS) src/turbo.cfg
 	$(LD) -C src/turbo.cfg -m $(BUILD)/turbo.map -Ln $(BUILD)/turbo.lbl -o $@ $(OBJS)
