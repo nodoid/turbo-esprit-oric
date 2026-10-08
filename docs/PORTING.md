@@ -114,8 +114,15 @@ The Oric picture is the Spectrum picture shifted, not scaled:
 * The 3D view (Spectrum rows 0-95, columns 0-27) is drawn by the original
   code into the Spectrum-format buffer at `$6400` with colours in the buffer
   at `$7040`; `S862E` (`view.s`) converts both to the Oric screen.
-* The status lines (Spectrum rows 22-23: PENALTY/SCORE yellow, messages
-  green) are HIRES lines 180-195 with an ink attribute in column 0.
+* The status lines (Spectrum character rows 22-23, y 176-191: PENALTY/SCORE
+  yellow, messages green) go to the Oric's **text lines** under the HIRES
+  picture (`$BF68`, 3 rows x 40 characters): Spectrum row 22 -> text row 0,
+  row 23 -> text row 1, text row 2 blank.  Column 0 of each row is the ink
+  attribute (yellow / green), Spectrum character column c (pixel x = 8c) ->
+  text column c + 4 (the 32 columns are centred).  The character set at
+  `$9800` (HIRES mode) holds the Spectrum ROM font, pixel columns 1-6 of each
+  glyph (the Spectrum font leaves columns 0 and 7 blank).  The gfx engine
+  routes text whose y is >= 176 there; HIRES lines 180-199 are unused.
 
 ## 6. Sound
 
