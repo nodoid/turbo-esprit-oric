@@ -40,6 +40,20 @@ def load_rom():
     return open(os.path.join(os.path.dirname(zx.__file__), 'roms', 'Spectrum48.rom'), 'rb').read()
 
 
+ORIC_ROM = os.environ.get('ORICROM', os.path.join(
+    '/private/tmp/claude-501/-Users-pauljohnson-RiderProjects-durell-turbo/'
+    'a65fa3af-adea-44f5-8cea-a95a5e33ecf6/scratchpad', 'oricutron', 'roms', 'basic11b.rom'))
+ORIC_FONT = None
+
+
+def load_oric_font(path=None):
+    """the Oric character set (chars 32-127) that the ROM's HIRES command
+    copies to $9900; set as the model's ROM font"""
+    global ORIC_FONT
+    ORIC_FONT = open(path or ORIC_ROM, 'rb').read()[0x3C78:0x3C78 + 768]
+    return ORIC_FONT
+
+
 def load_mem(tape=None):
     m = zxtape.load_image(tape or os.path.join(ROOT, 'orig', 'TurboEsprit.tzx'))
     m[0:0x4000] = load_rom()
@@ -80,6 +94,9 @@ class Engine:
         s.num = 0
         s.skipsub = ()
         s.nop8e = False     # tests: treat 8E as a no-op (original: call 0)
+        # the port draws ROM-font chars 32-127 with the Oric character set
+        # (load_oric_font()); None = the Spectrum ROM font (the original)
+        s.oric_font = ORIC_FONT
 
     def rnd(s):
         if s.rv is not None:
@@ -192,8 +209,12 @@ class Engine:
                 s.m[addr] ^= v
             else:
                 s.m[addr] = v
+        ofont = s.oric_font if (s.font == ROM_FONT and 32 <= ch < 128) else None
         for r in range(8):
-            g = s.m[(f + r) & 0xFFFF]
+            if ofont is not None:     # Oric charset row, shifted left one pixel
+                g = (ofont[(ch - 32) * 8 + r] << 1) & 0xFF
+            else:
+                g = s.m[(f + r) & 0xFFFF]
             if s.tbit == 0:
                 w(a, g)
                 a = s.down(a) if s.screen else (a + 32) & 0xFFFF
@@ -578,16 +599,28 @@ def decode_line(row):
 
 # --------------------------------------------------------------------------
 class TrackMem(bytearray):
-    """bytearray recording every write to the Spectrum bitmap"""
+    """bytearray recording every write (and read) of the Spectrum bitmap"""
 
     def __init__(self, data):
         super().__init__(data)
         self.written = set()
+        self.read = set()
+
+    def __getitem__(self, i):
+        if isinstance(i, int) and 0x4000 <= i < 0x5800:
+            self.read.add(i)
+        return super().__getitem__(i)
 
     def __setitem__(self, i, v):
         if isinstance(i, int) and 0x4000 <= i < 0x5800:
             self.written.add(i)
         super().__setitem__(i, v)
+
+
+# needle-only cells in either polarity: off - the wheel's fills (with the
+# needles elsewhere) read those cells as boundaries; inverted they look clear
+# and the fill leaks into the dial (seen in real-game samples)
+XOR_EITHER = False
 
 
 def build_dashboard(img):
@@ -628,6 +661,7 @@ def build_dashboard(img):
             x = (l & 0x1F) * 8
             for bit in range(8):
                 mark(x + bit, y)
+    wheel_read = {}         # cells the wheel streams read (fill boundaries)
     for d in (3, 1):
         mm = TrackMem(m)
         run_inline(mm, 0x9FBF if d & 2 else 0xA002)
@@ -635,6 +669,14 @@ def build_dashboard(img):
         m2 = TrackMem(mm)
         run_inline(m2, 0xA046 if d & 2 else 0xA06C)
         writemark(m2)
+        for t in (mm, m2):
+            cur[0] = wheel_read
+            for i in t.read:
+                h, l = i >> 8, i & 0xFF
+                y = ((h & 0x18) << 3) | (h & 7) | ((l & 0xE0) >> 2)
+                for bit in range(8):
+                    mark((l & 0x1F) * 8 + bit, y)
+            cur[0] = dyn
     cur[0] = xor_only
     for a in range(18):
         mm = bytearray(m)
@@ -655,9 +697,10 @@ def build_dashboard(img):
         run_inline(m3, 0xA421)
         writemark(m3)
     # cells only the XOR needles touch may use either polarity
+    # (not where the wheel's fills read: an inverted cell would let them leak)
     for y, cs in xor_only.items():
         for c in cs:
-            if c not in dyn.get(y, ()):
+            if c not in dyn.get(y, ()) and c not in wheel_read.get(y, ()) and XOR_EITHER:
                 dyn.setdefault(y, set()).add(-1 - c)       # marked "either"
     return m, dyn, final_state
 

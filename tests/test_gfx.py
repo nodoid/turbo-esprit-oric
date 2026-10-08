@@ -28,7 +28,7 @@ from sim6502 import Sim, fmt_diffs  # noqa: E402
 SP = os.environ.get('SP', '/private/tmp/claude-501/-Users-pauljohnson-RiderProjects-durell-turbo/'
                     'a65fa3af-adea-44f5-8cea-a95a5e33ecf6/scratchpad')
 OUT = os.path.join(SP, 'work_gfx')
-TRAMP = 0x9D80
+TRAMP = 0xC000          # (free in the test build; HIBSS is at $9Dxx)
 QUICK = '--quick' in sys.argv
 
 RESULTS = []
@@ -39,16 +39,43 @@ def result(name, ok, info=''):
     print('%-44s %s %s' % (name, 'OK ' if ok else 'FAIL', info))
 
 
+HOLES = []      # program segments placed in holes of the Spectrum RAM
+
+
 def build():
     r = subprocess.run([sys.executable, 'tools/buildtest.py', 'gfx', 'src/gfx.s', 'src/dash.s', 'data/gfx_data.s'],
                        capture_output=True, text=True)
     if r.returncode:
         print(r.stdout, r.stderr)
         sys.exit(1)
-    return Sim('build/test_gfx.bin')
+    sim = Sim('build/test_gfx.bin')
+    sim.mem[0x9900:0x9900 + 768] = OFONT       # left there by the ROM's HIRES
+    # segments of ours inside $5B00-$7BBD (e.g. RODATAH1): the Spectrum state
+    # copied in by load_state overwrites them, so they are restored after it
+    import re
+    for line in open('build/test_gfx.map'):
+        mm = re.match(r'^(\w+)\s+([0-9A-F]{6})\s+([0-9A-F]{6})\s+[0-9A-F]{6}', line)
+        if mm and not mm.group(1).startswith('ZXRAM') and mm.group(1) != 'DASHBLOB':
+            a, b = int(mm.group(2), 16), int(mm.group(3), 16)
+            if 0x5B00 <= a < 0x7BBE:
+                HOLES.append((a, bytes(sim.mem[a:b + 1])))
+    orig = sim.load_state
+
+    def load_state(*args, **kw):
+        orig(*args, **kw)
+        for a, data in HOLES:
+            sim.mem[a:a + len(data)] = data
+    sim.load_state = load_state
+    return sim
+
+
+def restore_holes(sim):
+    for a, data in HOLES:
+        sim.mem[a:a + len(data)] = data
 
 
 IMG = G.load_mem()
+OFONT = G.load_oric_font()      # the model draws ROM-font text with the Oric font
 
 
 def zx_state_to_sim(sim, m):
@@ -181,7 +208,12 @@ def test_buffer(sim):
     global DASHLIN
     DASHLIN = dash_linear()
     rng = random.Random(5)
-    streams = buffer_streams() + [('syn%d' % i, s) for i, s in enumerate(synth_streams(rng, 30 if QUICK else 300))]
+    skipped = 0
+    # (the region's wheel/needle streams reach Spectrum rows 96-191, i.e.
+    #  $7000-$7BFF in buffer mode, where the Oric program keeps tables in
+    #  holes of the Spectrum RAM; the game only uses buffer mode for the map,
+    #  inside the 3D buffer.  They are tested in screen mode instead.)
+    streams = [('syn%d' % i, s) for i, s in enumerate(synth_streams(rng, 30 if QUICK else 300))]
     bad = 0
     for name, st in streams:
         st = bytes(st)
@@ -189,7 +221,7 @@ def test_buffer(sim):
             st = st + b'\x00'
         # model
         m = bytearray(IMG)
-        m[0x6400:0x8400] = DASHLIN if name[:3] != 'syn' else bytes(0x2000)
+        m[0x6400:0x7000] = bytes(0xC00)
         # sub-streams with 8C -> 8E (model and sim)
         for a in range(0xA0EB, 0xA36F):
             if m[a] == 0x8C:
@@ -205,14 +237,19 @@ def test_buffer(sim):
         e.num = num
         e.nop8e = True
         e.run(0x9D80)
+        if m[0x7000:0x9D80] != IMG[0x7000:0x9D80] or m[0x5B00:0x6400] != IMG[0x5B00:0x6400]:
+            skipped += 1        # drew outside the 3D buffer (Oric tables live there)
+            continue
         # sim
-        sim.mem[0x6400:0x8400] = DASHLIN if name[:3] != 'syn' else bytes(0x2000)
+        sim.mem[0x6400:0x7000] = bytes(0xC00)
+        restore_holes(sim)
         # sub-streams (only the parts in the Oric data)
         copy_subs(sim, m)
         sim.mem[sim.sym['ZV_A4C3']] = num & 0xFF
         sim.mem[sim.sym['ZV_A4C3'] + 1] = num >> 8
         run_stream(sim, st, rvals=rv)
-        d = [a for a in range(0x6400, 0x8400) if sim.mem[a] != m[a]]
+        d = [a for a in range(0x6400, 0x7000) if sim.mem[a] != m[a]]
+        restore_holes(sim)
         st_ok = (sim.mem[sim.sym['ZV_A691']] == e.x and sim.mem[sim.sym['ZV_A691'] + 1] == e.y)
         if d or not st_ok:
             bad += 1
@@ -221,7 +258,8 @@ def test_buffer(sim):
                     name, len(d), ' '.join('%04X:%02X/%02X' % (a, m[a], sim.mem[a]) for a in d[:8]),
                     e.x, e.y, sim.mem[sim.sym['ZV_A691']], sim.mem[sim.sym['ZV_A691'] + 1]))
     copy_subs(sim, IMG)                       # undo the 8C->8E patch
-    result('buffer mode streams vs model', bad == 0, '%d streams, %d bad' % (len(streams), bad))
+    result('buffer mode streams vs model', bad == 0, '%d streams (%d skipped: drew outside $6400-$6FFF), %d bad'
+           % (len(streams) - skipped, skipped, bad))
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +303,7 @@ def spec_to_oric(mem, zxm):
                 x = c * 6 + k - 6
                 if x < 234 and G.spec_pixel(zxm, x, y):
                     bits |= 0x20 >> k
-            mem[la + c] = (b & 0xC0) | bits
+            mem[la + c] = (b & 0xC0) | bits ^ (0x3F if inverted(mem, la, c) else 0)
 
 
 LAMPBYTES = set()
@@ -278,15 +316,44 @@ def dynbytes():
     global _DYN
     if _DYN is None:
         _, dyn, _ = G.build_dashboard(IMG)
-        _DYN = set(lineaddr(y) + c for y, cols in dyn.items() for c in cols)
+        # (c < 0: -1-c, a cell only the XOR needles touch: either polarity)
+        _DYN = set(lineaddr(y) + (c if c >= 0 else -1 - c) for y, cols in dyn.items() for c in cols)
+        DYN_XOR.update(lineaddr(y) - 1 - c for y, cols in dyn.items() for c in cols if c < 0)
     return _DYN
+
+
+DYN_XOR = set()     # cells only the XOR needles touch (encoded either polarity)
+
+
+def inverted(mem, la, c):
+    """True if a set bit of the pixel byte at column c of the line at la
+    shows cyan (needle-only cells may be encoded with paper black / ink
+    cyan; XOR drawing looks the same either way)"""
+    ink, paper = 7, 0
+    for k in range(c):
+        ink, paper, _ = G.disp(mem[la + k], ink, paper)
+    inv = 7 if mem[la + c] & 0x80 else 0
+    return (ink ^ inv) == 6 and (paper ^ inv) == 0
 
 
 def bitdiff(mem, zxm, allbytes=False):
     db = dynbytes()
-    return [(x, y) for (x, y), b in oric_bits(mem).items() if b != G.spec_pixel(zxm, x, y)
-            and lineaddr(y) + (x + 6) // 6 not in LAMPBYTES
-            and (allbytes or lineaddr(y) + (x + 6) // 6 in db)]
+    out = []
+    pol = {}
+    for (x, y), b in oric_bits(mem).items():
+        a = lineaddr(y) + (x + 6) // 6
+        if a in LAMPBYTES or not (allbytes or a in db):
+            continue
+        if a not in pol:
+            pol[a] = inverted(mem, lineaddr(y), (x + 6) // 6)
+            if pol[a] and a not in DYN_XOR:
+                pol[a] = None   # live cell near a lamp, reversed by design
+                #                 (tools/gen_gfx.py): the wheel shows inverted
+        if pol[a] is None:
+            continue
+        if (b ^ pol[a]) != G.spec_pixel(zxm, x, y):
+            out.append((x, y))
+    return out
 
 
 def setup_screen(sim):
@@ -299,6 +366,11 @@ def setup_screen(sim):
     m[sim.sym['ZV_E968']] = 0
     sim.a = 0
     sim.carry = 0
+    # the packed dashboard is a disk blob (src/disk.inc): DREAD -> RTS and
+    # the blob put at its load address, as the boot/disk code would
+    m[0x0530] = 0x60
+    blob = open('build/test_gfx.bin.dash', 'rb').read()
+    m[0x6900:0x6900 + len(blob)] = blob
     cyc = sim.call('Z_9E1E')
     return cyc
 
@@ -361,11 +433,73 @@ def test_menus(sim):
                     if x < 234:
                         n += 1
                         bad += ((b >> (5 - k)) & 1) != G.spec_pixel(m, x, y)
-        td = sum(1 for a, b in zip(sum(text_rows_from_spec(m, rom), []), sum(text_rows_oric(sim.mem), []))
+        td = sum(1 for a, b in zip(sum(text_rows_from_spec(m, rom, True), []), sum(text_rows_oric(sim.mem), []))
                  if a != b and a != 0x20)
         result('A4C9 stream %04X (menu text)' % addr, bad == 0 and td == 0,
                '%d pixels, %d differ; text rows %d differ' % (n, bad, td))
         save_cmp(sim.mem, m, 'menu_%04X' % addr)
+
+
+def test_squeeze(sim):
+    """gfx_squeeze = 1 (text-page mode): menu streams; every glyph must be
+    its full 8-pixel bitmap at Oric x = ((x*7)>>3) + 6 (later glyphs
+    overwrite / OR the earlier ones, like the engine's op)"""
+    sq = sim.sym['gfx_squeeze']
+    for addr in (0xFA21, 0xFD1D, 0x73DA):
+        m = bytearray(IMG)
+        m[0x4000:0x5800] = bytes(0x1800)
+        e = G.Engine(m)
+        e.entry_A4C9(0)
+        placed = []
+        orig = G.Engine.char
+
+        def char(s_, ch, placed=placed):
+            if s_.screen and s_.y < 176:
+                if s_.font == G.ROM_FONT and 32 <= ch < 128:
+                    rows = [(OFONT[(ch - 32) * 8 + r] << 1) & 0xFF for r in range(8)]
+                else:
+                    rows = [m[(s_.font + ch * 8 + r) & 0xFFFF] for r in range(8)]
+                placed.append((s_.x, s_.y, rows, s_.op))
+            orig(s_, ch)
+        G.Engine.char = char
+        try:
+            end = e.run(addr)
+        finally:
+            G.Engine.char = orig
+        exp = {}
+        for x, y, rows, op in placed:
+            p0 = ((x * 7) >> 3) + 6
+            for r, g in enumerate(rows):
+                for k in range(8):
+                    b = (g >> (7 - k)) & 1
+                    key = (p0 + k, y + r)
+                    if op == 'or':
+                        exp[key] = exp.get(key, 0) | b
+                    elif op == 'xor':
+                        exp[key] = exp.get(key, 0) ^ b
+                    else:
+                        exp[key] = b
+        for a in range(0xA000, 0xBF40):
+            sim.mem[a] = 0x40
+        sim.mem[0xBFDF] = 0x1E
+        blob = open('build/test_gfx.bin.menu', 'rb').read()     # MCODE (menu blob)
+        sim.mem[0x5C00:0x5C00 + len(blob)] = blob
+        sim.mem[sq] = 1
+        run_stream(sim, bytes(IMG[addr:end]), entry='Z_A4C9')
+        sim.mem[sq] = 0
+        bad = n = 0
+        for y in range(176):
+            la = lineaddr(y)
+            for c in range(1, 40):
+                b = sim.mem[la + c]
+                if not b & 0x40:
+                    continue
+                for k in range(6):
+                    n += 1
+                    bad += ((b >> (5 - k)) & 1) != exp.get((c * 6 + k, y), 0)
+        result('text-page mode (gfx_squeeze=1) %04X' % addr, bad == 0,
+               '%d pixels, %d differ, %d glyphs' % (n, bad, len(placed)))
+        save_cmp(sim.mem, m, 'squeeze_%04X' % addr)
 
 
 def test_screen_synth(sim):
@@ -415,9 +549,14 @@ def test_screen_synth(sim):
            '%d streams (%d skipped: x>=234), %d bad' % (n, skipped, bad))
 
 
-def text_rows_from_spec(zxm, rom):
-    """decode Spectrum char rows 22, 23 into ROM-font character codes"""
-    glyphs = {bytes(rom[0x3D00 + 8 * (c - 32):0x3D00 + 8 * (c - 31)]): c for c in range(32, 128)}
+def text_rows_from_spec(zxm, rom, oric=False):
+    """decode Spectrum char rows 22, 23 into character codes (glyph shapes of
+    the Spectrum ROM font, or with oric=True of the Oric font as the model
+    draws it)"""
+    if oric:
+        glyphs = {bytes((OFONT[8 * (c - 32) + k] << 1) & 0xFF for k in range(8)): c for c in range(32, 128)}
+    else:
+        glyphs = {bytes(rom[0x3D00 + 8 * (c - 32):0x3D00 + 8 * (c - 31)]): c for c in range(32, 128)}
     rows = []
     for r in (22, 23):
         row = []
@@ -433,6 +572,27 @@ def text_rows_oric(mem):
 
 
 IGNORE_ZV = {0xA683, 0xA684, 0xA685, 0xA686, 0xA687, 0xA688}   # Oric representation in screen mode
+
+
+def oric_expected(smp, entry):
+    """the Spectrum's post state, with the buffer drawn by the model from the
+    pre state using the Oric font for ROM-font text (the port's font)"""
+    m = bytearray(smp.pre_mem)
+    e = G.Engine(m)
+    e.screen = m[0xA6D7] != 0
+    e.op = {0x00: 'andnot', 0xB6: 'or', 0xAE: 'xor'}[m[0xA6E0]]
+    e.font = m[0xA6BC] | m[0xA6BD] << 8
+    e.x, e.y = m[0xA691], m[0xA692]
+    e.taddr = m[0xA687] | m[0xA688] << 8
+    e.tbit = m[0xA683]
+    a = smp.pre['af'] >> 8
+    if entry == 0xA695:
+        e.printc(a)
+    else:
+        e.number(a, smp.pre['de'] & 0xFF, smp.pre['hl'])
+    post = bytearray(smp.post_mem)
+    post[0x6400:0x7040] = m[0x6400:0x7040]      # (the 3D buffer)
+    return bytes(post)
 
 
 def test_samples(sim, caps):
@@ -475,7 +635,10 @@ def test_samples(sim, caps):
                     sim.call('Z_%04X' % entry, a=smp.pre['af'] >> 8, rvals=smp.rvals)
                 ign = set(IGNORE_ZV) if screen or entry not in (0xA526, 0xA695, 0xA911) else set()
                 sp = smp.pre['sp']
-                d = [x for x in sim.compare(smp.post_mem, ignore=((sp - 0x40, sp + 2),))
+                post = smp.post_mem
+                if entry in (0xA695, 0xA911) and not screen:
+                    post = oric_expected(smp, entry)
+                d = [x for x in sim.compare(post, ignore=((sp - 0x40, sp + 2),) + tuple((h, h + len(d)) for h, d in HOLES))
                      if x[0] not in ign]
                 bd = bitdiff(sim.mem, smp.post_mem) if entry not in (0xA526, 0xA695, 0xA911) or screen else []
                 td = []
@@ -554,6 +717,7 @@ if __name__ == '__main__':
     test_dash_model(sim)
     test_menus(sim)
     test_screen_synth(sim)
+    test_squeeze(sim)
     import pickle
     caps = []
     for c in '1234':
