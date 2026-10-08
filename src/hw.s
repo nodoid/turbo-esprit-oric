@@ -187,6 +187,7 @@ key_row:
         tay
         lda kacc
         plp
+        cmp #0                  ; Z set when no key in the row
         rts
 
 ; Z_F37A: test the key described by the 3-byte key-table entry at (zl,zh):

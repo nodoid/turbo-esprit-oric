@@ -67,7 +67,18 @@ class Ref:
         return self.z.read(a, n)
 
     def poke(self, a, data):
-        self.z.write(a, bytes(data), ram_page=0)
+        data = bytes(data)
+        if a + len(data) <= 0xC000:
+            self.z.write(a, data, ram_page=0)
+            return
+        if a < 0xC000:
+            n = 0xC000 - a
+            self.z.write(a, data[:n], ram_page=0)
+            a, data = 0xC000, data[n:]
+        # the zx package drops the offset inside the top bank: rewrite it whole
+        bank = bytearray(self.z.read(0xC000, 0x4000))
+        bank[a - 0xC000:a - 0xC000 + len(data)] = data
+        self.z.write(0xC000, bytes(bank), ram_page=0)
 
     def key(self, k, down):
         self.z.devices.notify(KeyStroke(k.upper() if len(k) == 1 else k, pressed=down))
