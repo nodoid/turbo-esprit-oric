@@ -22,7 +22,7 @@ $(BUILD)/turbo.bin: $(OBJS) src/turbo.cfg
 	$(LD) -C src/turbo.cfg -m $(BUILD)/turbo.map -Ln $(BUILD)/turbo.lbl -o $@ $(OBJS)
 
 $(TAP): $(BUILD)/turbo.bin data/loadscr.bin tools/mktap.py
-	python3 tools/mktap.py $@ 0x600 SCREEN:0xA000:data/loadscr.bin ESPRIT:0x600:$(BUILD)/turbo.bin
+	python3 tools/mktap.py $@ data/loadscr.bin $(BUILD)/turbo.bin.ovl $(BUILD)/turbo.bin
 
 # regenerate data/ from the original Spectrum tape (orig/TurboEsprit.tzx)
 extract:

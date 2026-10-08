@@ -30,6 +30,9 @@ class Sim:
         self.mem = bytearray(0x10000)
         data = open(binpath, 'rb').read()
         self.mem[LOAD:LOAD + len(data)] = data
+        if os.path.exists(binpath + '.ovl'):           # RAM under the ROM
+            ovl = open(binpath + '.ovl', 'rb').read()
+            self.mem[0xC000:0xC000 + len(ovl)] = ovl
         self.sym = {}
         lblpath = lblpath or os.path.splitext(binpath)[0] + '.lbl'
         for line in open(lblpath):
@@ -47,6 +50,23 @@ class Sim:
         self.a = 0
         self.carry = 0
         self.zero = 0
+        self.hooks = {}     # pc -> fn(sim); the hooked routine is skipped (RTS)
+        self.keys_down = set()   # logical keys for the Z_F37A hook: 'JLKASMT'
+        if 'Z_F37A' in self.sym:
+            self.hooks[self.sym['Z_F37A']] = Sim._f37a
+
+    @staticmethod
+    def _f37a(sim):
+        # key test: zl/zh -> key-table entry ($7524 + 3*k for J L K A S M T)
+        m = sim.mem
+        hl = m[sim.sym['zl']] | (m[sim.sym['zh']] << 8)
+        k = (hl - 0x7524) // 3
+        down = 0 <= k < 7 and 'JLKASMT'[k] in sim.keys_down
+        hl += 2
+        m[sim.sym['zl']] = hl & 0xFF
+        m[sim.sym['zh']] = hl >> 8
+        sim.mpu.a = 0 if down else 1
+        sim.mpu.p = (sim.mpu.p & ~0x82) | (0x02 if down else 0)
 
     def addr(self, x):
         return self.sym[x] if isinstance(x, str) else x
@@ -105,7 +125,15 @@ class Sim:
         rnd = self.sym.get('rnd_r')
         rv = list(rvals)
         start = mpu.processorCycles
+        hooks = self.hooks
         while mpu.pc != STOP:
+            if mpu.pc in hooks:
+                hooks[mpu.pc](self)
+                lo = self.mem[0x100 + ((mpu.sp + 1) & 0xFF)]
+                hi = self.mem[0x100 + ((mpu.sp + 2) & 0xFF)]
+                mpu.sp = (mpu.sp + 2) & 0xFF
+                mpu.pc = ((hi << 8) | lo) + 1
+                continue
             if mpu.pc == rnd:
                 mpu.a = rv.pop(0) if rv else 0
                 mpu.p = (mpu.p & ~0x82) | (0x02 if mpu.a == 0 else 0) | (mpu.a & 0x80)

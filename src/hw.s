@@ -43,8 +43,20 @@ hw_init:
         sta VIA_T1CH            ; 20ms period
         lda #$C0
         sta VIA_IER             ; enable T1 interrupt
-        ; the ROM jumps through page 2 on IRQ ($0244); with RAM at $FFFE we
-        ; cannot change the hardware vector, so patch the ROM's indirection
+        ; Overlay RAM: the ROM is switched off for good (Microdisc control
+        ; register: bit 1 = 0 maps the RAM at $C000, bit 7 = 1 keeps the disk
+        ; EPROM out), so the 6502 takes its vectors from RAM.
+        lda #$80
+        sta MDCTRL
+        lda #<irq
+        sta $FFFE
+        lda #>irq
+        sta $FFFF
+        lda #<nmi
+        sta $FFFA
+        lda #>nmi
+        sta $FFFB
+        ; (also patch the ROM's page-2 indirection, harmless when unused)
         lda #$4C                ; JMP abs
         sta $0244
         lda #<irq
@@ -82,7 +94,7 @@ irq:    pha
         pla
         tax
         pla
-        rti
+nmi:    rti
 hookj:  jmp (irq_hook)
 no_hook:
         rts

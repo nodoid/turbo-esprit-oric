@@ -38,10 +38,10 @@ T1_PERIOD = 20000
 class Machine:
     def __init__(self):
         self.ram = bytearray(65536)
-        for a in range(0xC000, 0x10000):
-            self.ram[a] = 0x60          # RTS everywhere in "ROM"
-        self.ram[0xFFFE] = 0x44         # Atmos ROM: IRQ -> $0244
-        self.ram[0xFFFF] = 0x02
+        self.rom = bytearray([0x60] * 0x4000)   # RTS everywhere in "ROM"
+        self.rom[0x3FFE] = 0x44                 # Atmos ROM: IRQ -> $0244
+        self.rom[0x3FFF] = 0x02
+        self.romdis = False                     # Microdisc $0314 bit 1 = 0
         self.ier = 0
         self.t1_irq_seen = 0
         self.orb = 0
@@ -138,11 +138,17 @@ class Mem:
             return [self[i] for i in range(*a.indices(65536))]
         if 0x0300 <= a <= 0x030F:
             return self.m.read(a)
+        if a >= 0xC000 and not self.m.romdis:
+            return self.m.rom[a - 0xC000]
         return self.ram[a]
 
     def __setitem__(self, a, v):
-        if 0x0300 <= a <= 0x030F or a >= 0xC000:
+        if a == 0x0314:
+            self.m.romdis = not (v & 2)
+        elif 0x0300 <= a <= 0x030F:
             self.m.write(a, v)
+        elif a >= 0xC000 and not self.m.romdis:
+            pass
         else:
             self.ram[a] = v
 
@@ -167,8 +173,12 @@ def load_tap(path, ram):
         while d[i] != 0:
             i += 1
         i += 1
+        name = d[i - 1 - 16:i - 1]
         data = d[i:i + (end - start + 1)]
-        ram[start:start + len(data)] = data
+        if b'ESPRIT1' in d[i - 20:i]:
+            ram[0xC000:0xC000 + len(data)] = data   # overlay (relocated at load)
+        else:
+            ram[start:start + len(data)] = data
         i += len(data)
         if hdr[2] == 0x80 and first is None:
             first = (start, end, hdr)
@@ -275,7 +285,8 @@ def main():
     m = Machine()
     start, end, hdr = load_tap(args.tap, m.ram)
     entry = args.entry if args.entry is not None else 0x0600
-    mpu = MPU(memory=Mem(m), pc=entry)
+    mem = Mem(m)
+    mpu = MPU(memory=mem, pc=entry)
     mpu.sp = 0xFF
     os.makedirs(args.outdir, exist_ok=True)
 
@@ -304,8 +315,8 @@ def main():
             mpu.stPushWord(mpu.pc)
             mpu.stPush(mpu.p & ~mpu.BREAK | mpu.UNUSED)
             mpu.p |= mpu.INTERRUPT
-            mpu.pc = m.ram[0xFFFE] | (m.ram[0xFFFF] << 8)
-        if mpu.pc >= 0xC000:
+            mpu.pc = mem[0xFFFE] | (mem[0xFFFF] << 8)
+        if mpu.pc >= 0xC000 and not m.romdis:
             m.rom_hits += 1
             if m.rom_hits < 5:
                 print("ROM call at %04X" % mpu.pc, file=sys.stderr)
