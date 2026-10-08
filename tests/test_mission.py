@@ -151,9 +151,10 @@ class ZSim(Sim):
             return mem[s[r]]
         main = {'bc': g('zc') | g('zb') << 8, 'de': g('ze') | g('zd') << 8, 'hl': g('zl') | g('zh') << 8}
         alt = {'bc': g('zc2') | g('zb2') << 8, 'de': g('ze2') | g('zd2') << 8, 'hl': g('zl2') | g('zh2') << 8}
-        swap = name == 'Z_B412'           # called after "exx", starts with exx
-        if swap:
-            main, alt = alt, main
+        # Z_B412: the original is called after "exx" and starts with exx, so
+        # the 6502 version takes and returns HL/BC in the alternate set
+        # (zl2/zh2...); the Z80 returns with the banks swapped.
+        swap = name == 'Z_B412'
         f = (mpu.p & 1) | (0x40 if mpu.p & 2 else 0)
         m.af = mpu.a << 8 | f
         m.bc, m.de, m.hl = main['bc'], main['de'], main['hl']
@@ -187,7 +188,7 @@ class ZSim(Sim):
         main = {'bc': m.bc, 'de': m.de, 'hl': m.hl}
         alt = {'bc': m.alt_bc, 'de': m.alt_de, 'hl': m.alt_hl}
         if swap:
-            pass                           # returns in the caller's bank
+            main, alt = alt, main
         for (lo, hi), v in (((('zc', 'zb')), main['bc']), (('ze', 'zd'), main['de']),
                             (('zl', 'zh'), main['hl']), (('zc2', 'zb2'), alt['bc']),
                             (('ze2', 'zd2'), alt['de']), (('zl2', 'zh2'), alt['hl']),

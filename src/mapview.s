@@ -8,7 +8,10 @@
 ; original's (identity range), see notes R8 4.2.
 ;
 ; The pixel address helper SA638 (buffer mode, selected by SA8BF just
-; before) is inlined: HL = $6400 + 32*y + x/8, shift = x & 7.
+; before) is inlined: HL = $6400 + 32*y + x/8, shift = x & 7.  The street
+; type lookups S952F drop the "index >= 32" case, which cannot happen here
+; (the window origin is clamped to 0..18 / 0..25).  Vehicle records are read
+; through mission.s's work record CR (SE3EA).
 
         .include "zx.inc"
 
@@ -24,82 +27,91 @@
         ZIMPORT $A911           ; gfx: print number HL (A = skip, E = flags)
         ZIMPORT $F9F2           ; delay
         ZIMPORT $DA80           ; mission: IY = object of car IX
-        ZIMPORT $DC5F           ; mission: object IY -> map record IX
+        ZIMPORT $DC5F           ; mission: object IY -> map record IX (and CR)
         ZVIMPORT $9282          ; city block
         ZVIMPORT $8699          ; view: colour the attribute buffer is reset to
         ZVIMPORT $86D3          ; view: 6 wheel cell colours
+        .importzp CR            ; mission.s work record
+        .import getix, ixg, cartab
 
 T_9382  = ZV_9282 + $100
 T_93A2  = ZV_9282 + $120
-
-.macro IX_GLOBAL
-        lda #$E1
-        sta zixl
-        lda #$75
-        sta zixh
-.endmacro
+M       = CR                    ; D71D0-D71DD while drawing (mission.s zero page)
 
         .zeropage
 rowp:   .res 2                  ; buffer address of the current cell (Z80 stack)
 wp:     .res 2
-rec:    .res 2                  ; IX in SE3EA
 
-        .data
-mt:     .res 1
-kas:    .res 1
-ncol:   .res 1
-gly:    .res 1
-offl:   .res 1                  ; glyph offset (L,H) / position
-offh:   .res 1
-bsx:    .res 1                  ; base position (C,B)
-bsy:    .res 1
-mpos:   .res 1
-mcx:    .res 1
-mcy:    .res 1
-mgly:   .res 1                  ; D (marker glyph)
-lval:   .res 1                  ; D (label value)
-lcoord: .res 1                  ; E (label coordinate)
-lflag:  .res 1                  ; L (number print flags)
-mk:     .res 1
+; scratch: mission.s zero page that is free while the map is drawn (none of
+; these lives across a call into mission.s)
+        .importzp lb, lc, ld_, le_, lpos, lt, ll, ldir, rnp, rdist, rcame, rd
+mt      = lb
+kas     = lc
+ncol    = ld_
+gly     = le_
+offl    = lpos
+offh    = lt
+mpos    = ll
+lval    = ldir
+lcoord  = rnp
+lflag   = rdist
+mk      = rcame                 ; (these two live across calls of DC5F/DA80,
+mgly    = rd                    ;  which do not use them)
 
         .data
         ZLABEL $E3B9, 1         ; label letter 'N' / 'E' (SMC operand)
         .byte $4E
 
+        .rodata
+; junction landmark 0x21 offsets: N-S case (x^y bit2 set / clear), E-W case
+owgg:   .byte $1C, $1A
+owgl:   .byte $FD, $05
+owgh:   .byte $F4, $FC
+joffl:  .byte $FC, $03, $FF, $FF
+joffh:  .byte $FA, $FA, $F6, $FE
+; frame clearing: address, rows, width, value
+ftlo:   .byte <$6426, <$6F46, <$6425, <$643A, <$7066
+fthi:   .byte >$6426, >$6F46, >$6425, >$643A, >$7066
+ftn:    .byte 8, 8, 96, 96, 10
+ftw:    .byte 20, 20, 1, 1, 20
+ftv:    .byte 0, 0, 0, 0, $20
+
         .code
+
+; key entry $75xx (A = low byte) -> zl/zh
+setkp:  sta zl
+        lda #$75
+        sta zh
+        rts
 
 ; ---------------------------------------------------------------------------
 ; SE0AA: M key handler (every main-loop pass)
         ZPROC $E0AA
         lda #<$7533
-        sta zl
-        lda #>$7533
-        sta zh
+        jsr setkp
         jsr Z_F37A
-        beq @down
+        php
         lda $7610
-        and #$FD
-        sta $7610
-        rts
-@down:  lda $7610
+        plp
+        bne @up
         tax
         and #$02
-        beq :+
-        rts
-:
+        bne @rts
         txa
         ora #$02
+        bne Z_E0C0              ; (always)
+@up:    and #$FD
+        sta $7610
+@rts:   rts
 ; SE0C0: A = D7610: toggle the map
         ZPROC $E0C0
         eor #$01
         sta $7610
         lsr a
-        bcs @on
         lda #$38
-        bne @set
-@on:    lda $7504
-        sec
-        sbc #8
+        bcc @set
+        lda $7504
+        sbc #8                  ; (C set)
         sta $71D0
         lda $7505
         sec
@@ -107,12 +119,11 @@ mk:     .res 1
         sta $71D1
         lda #$30
 @set:   jsr Z_E0F1
-        IX_GLOBAL
-        lda $760E
-        and #$04
+        jsr ixg
+        lda #$04
+        bit $760E
         bne @rts
-        lda $760E
-        ora #$04
+        ora $760E
         sta $760E
         lda #1
         sta $760F
@@ -137,57 +148,38 @@ mk:     .res 1
         jsr Z_A8BF
         jsr Z_A8D3
         lda #<$752D             ; A/S scroll north/south
-        sta zl
-        lda #>$752D
-        sta zh
+        jsr setkp
         jsr Z_98F4
         lda zd
         sta kas
         lda #<$7524             ; J/L scroll east/west
-        sta zl
-        lda #>$7524
-        sta zh
+        jsr setkp
         jsr Z_98F4
         ldx $71D0
         lda zd
-        lsr a
-        bcc @nx
-        lsr a
-        bcc @dl
-        inx
-        inx
-@dl:    dex
-@nx:    stx mt
-        ldy $71D1
+        jsr scroll
+        stx mt
+        ldx $71D1
         lda kas
-        lsr a
-        bcc @ny
-        lsr a
-        bcc @dh
-        iny
-        iny
-@dh:    dey
-@ny:    tya
+        jsr scroll
+        txa
         ldx #$1A
         jsr se3cf
-        sta $71D1
-        sta $71D3
+        sta M+1
+        sta M+3
         lda mt
         ldx #$13
         jsr se3cf
-        sta $71D0
-        sta $71D2
+        sta M+0
+        sta M+2
         lda #$2C
-        sta $71D4
-        lda #$5A
-        sta $71D5
         ; --- one column of cells
-@col:   ldy $71D2
-        lda #0
-        cpy #$20
-        bcs @t0
+@col:   sta M+4
+        lda #$5A
+        sta M+5
+        ldy M+2
         lda T_9382,y
-@t0:    sta $71D6
+        sta M+6
         ldx #$E0
         tay
         beq @p
@@ -195,111 +187,79 @@ mk:     .res 1
         and #$02
         beq @p
         ldx #$80
-@p:     stx $71D8
+@p:     stx M+8
         lda #0
-        sta $71D9
-        sta $71DC
+        sta M+9
+        sta M+12
         lda #$FF
-        sta $71DA
+        sta M+10
         lda #$F8
-        sta $71DB
-        lda $71D5               ; SA638 (buffer)
-        tax
-        lsr a
-        lsr a
-        lsr a
-        clc
-        adc #$64
+        sta M+11
+        lda #$6F                ; SA638 (buffer): $6400 + 32*$5A + x/8
         sta rowp+1
-        txa
-        asl a
-        asl a
-        asl a
-        asl a
-        asl a
+        lda M+4
+        lsr a
+        lsr a
+        lsr a
+        ora #$40
         sta rowp
-        lda $71D4
-        lsr a
-        lsr a
-        lsr a
-        ora rowp
-        sta rowp
-        lda $71D4
+        lda M+4
         and #7
         beq @row
         tax
-@sh:    lsr $71D8
-        ror $71D9
-        ror $71DA
-        ror $71DB
-        ror $71DC
+@sh:    lsr M+8
+        ror M+9
+        ror M+10
+        ror M+11
+        ror M+12
         dex
         bne @sh
         ; --- one cell
-@row:   lda $71D2
+@row:   lda M+2
         sta zl
-        lda $71D3
+        lda M+3
         sta zh
         jsr Z_9564
         lda ze
-        sta $71DD
-        ldy $71D3
-        lda #0
-        cpy #$20
-        bcs @t1
+        sta M+13
+        ldy M+3
         lda T_93A2,y
-@t1:    sta $71D7
-        lda $71DD
+        sta M+7
+        lda M+13
         lsr a
         bcs @e1d1               ; east blocked
-        lda $71D7
+        lda M+7
         bpl @th
         lda #2
-@th:    eor #$FF
-        sec
-        adc #3
+@th:    eor #3                  ; (3 - type) & 3
         and #3
         tax
-        lda #<$71DA
+        lda #M+10
         ldy #3
         jsr se359
-        lda $71D7
-        bpl @e1d1
-        and #$04
-        cmp #$01                ; C = bit2
-        lda #$1A
-        adc #0
-        ldx #$05
-        ldy #$FC
-        jsr se33d
-@e1d1:  lda $71DD
+        ldx #1                  ; row one-way arrow
+        jsr owg
+@e1d1:  lda M+13
         and #$02
         bne @e1f3               ; north blocked
-        lda #<$71D8
+        lda #M+8
         ldx #12
         ldy #2
         jsr se359
-        lda $71D6
-        bpl @e1f3
-        and #$04
-        cmp #$01
-        lda #$1C
-        adc #0
-        ldx #$FD
-        ldy #$F4
-        jsr se33d
-@e1f3:  lda $71DD
+        ldx #0                  ; column one-way arrow
+        jsr owg
+@e1f3:  lda M+13
         bne @e219
-        lda $71D6
+        lda M+6
         clc
-        adc $71D7
+        adc M+7
         cmp #2
         bcs @e260
         ldx #$1E
         tay
         beq @g
         inx
-        lda $71D7
+        lda M+7
         lsr a
         bcc @g
         inx
@@ -308,40 +268,35 @@ mk:     .res 1
         ldy #$FB
         jsr se33d
         jmp @e260
-@e219:  cmp #5
-        bne @e23b
-        lda $71D6
+@e219:  ldx #0                  ; 5: N-S only, 10: E-W only
+        cmp #5
+        beq @j
+        inx
+        cmp #$0A
+        bne @e260
+@j:     lda M+6,x
         cmp #1
         bne @e260
-        lda $71D7
+        txa
+        eor #1
+        tay
+        lda M+6,y
         and #$02
         beq @e260
-        ldx #$FC
-        ldy #$FA
-        lda $71D2
-        eor $71D3
+        txa
+        asl a
+        tay
+        lda M+2
+        eor M+3
         and #$04
-        bne @e25b
-        ldx #$03
-        bne @e25b
-@e23b:  cmp #$0A
-        bne @e260
-        lda $71D7
-        cmp #1
-        bne @e260
-        lda $71D6
-        and #$02
-        beq @e260
-        ldx #$FF
-        ldy #$F6
-        lda $71D2
-        eor $71D3
-        and #$04
-        bne @e25b
-        ldy #$FE
-@e25b:  lda #$21
+        bne @k
+        iny
+@k:     ldx joffl,y
+        lda joffh,y
+        tay
+        lda #$21
         jsr se33d
-@e260:  inc $71D3
+@e260:  inc M+3
         lda rowp
         sec
         sbc #$80
@@ -349,93 +304,96 @@ mk:     .res 1
         lda rowp+1
         sbc #$01
         sta rowp+1
-        lda $71D5
+        lda M+5
         sec
         sbc #$0C
         bcc @e278
-        sta $71D5
+        sta M+5
         cmp #8
         bcc @e278
         jmp @row
-@e278:  lda $71D1
-        sta $71D3
-        inc $71D2
-        lda $71D4
+@e278:  lda M+1
+        sta M+3
+        inc M+2
+        lda M+4
         clc
         adc #$0C
         cmp #$D2
         bcs @markers
-        sta $71D4
-        lda #$5A
-        sta $71D5
         jmp @col
         ; --- vehicle markers (every other pass)
 @markers:
-        lda #<$71D0
-        sta zixl
-        lda #>$71D0
-        sta zixh
+        ldx #13                 ; D71D0-D71DD back to memory
+@fl:    lda M,x
+        sta $71D0,x
+        dex
+        bpl @fl
+        ldx #$D0
+        jsr setix71
         lda $75F8
         lsr a
         bcs @e2ca
-        lda #<$7792
+        lda #$92
         sta ziyl
-        lda #>$7792
+        lda #$77
         sta ziyh
         lda #$17
         sta mgly
         jsr se3d8
-        lda #0
-        sta mk
-@mc:    ldx mk
+        ldx #0
+@mc:    stx mk
         lda cartab,x
-        sta rec
+        sta zixl
         lda #$78
-        sta rec+1
-        ldy #0
-        lda (rec),y
+        sta zixh
+        jsr getix
+        lda CR
         bmi @mn
         ldx #$22
         stx mgly
         and #$04
         beq @me
-        lda rec
-        sta zixl
-        lda rec+1
-        sta zixh
         jsr Z_DA80
         jsr se3d8
         jmp @mn
 @me:    jsr se3ea
-@mn:    inc mk
-        lda mk
-        cmp #3
+@mn:    ldx mk
+        inx
+        cpx #3
         bne @mc
-        lda #<$787C             ; IX as the original leaves it
+        lda #$7C                ; IX as the original leaves it
         sta zixl
-        lda #>$787C
+        lda #$78
         sta zixh
 @e2ca:  jsr Z_F9F2
-        ; --- frame: clear rows 1-8 and 90-97, columns 5 and 26
-        lda #<$6426
-        ldy #>$6426
-        ldx #8
-        jsr clr0
-        lda #<$6F46
-        ldy #>$6F46
-        ldx #8
-        jsr clr0
-        lda #<$6425
-        jsr clrcol
-        lda #<$643A
-        jsr clrcol
-        lda #<$7066             ; green paper behind the map
+        ; --- frame: clear rows 1-8 and 90-97, columns 5 and 26, green paper
+        ldx #4
+@fc:    lda ftlo,x
         sta wp
-        lda #>$7066
+        lda fthi,x
         sta wp+1
-        ldx #10
-        lda #$20
-        jsr fill20
+        lda ftw,x
+        sta ncol
+        lda ftn,x
+        sta mk
+        lda ftv,x
+@fr:    ldy ncol
+        dey
+@fb:    sta (wp),y
+        dey
+        bpl @fb
+        tay
+        lda wp
+        clc
+        adc #32
+        sta wp
+        bcc @fn
+        inc wp+1
+@fn:    tya
+        dec mk
+        bne @fr
+        dex
+        bpl @fc
         jsr Z_A8DB
         ; --- labels "N<x>" top and bottom
         lda $71D0
@@ -447,10 +405,7 @@ mk:     .res 1
         jsr se3a4
         lda #$5A
         jsr se3a4
-        lda lval
-        clc
-        adc #5
-        sta lval
+        jsr lv5
         ldx lcoord
         txa
         clc
@@ -469,10 +424,7 @@ mk:     .res 1
         jsr se3ca
         lda #$D8
         jsr se3ca
-        lda lval
-        clc
-        adc #5
-        sta lval
+        jsr lv5
         lda lcoord
         sec
         sbc #$3C
@@ -482,7 +434,27 @@ mk:     .res 1
         bcs @e31e
 @rts:   rts
 
-cartab: .byte $5E, $68, $72
+setix71:
+        stx zixl
+        lda #$71
+        sta zixh
+        rts
+
+lv5:    lda lval
+        clc
+        adc #5
+        sta lval
+        rts
+
+; J/L or A/S code A (S98F4: 3 = first key, 1 = second key) -> X +1 / -1
+scroll: lsr a
+        bcc @r
+        lsr a
+        bcc @d
+        inx
+        inx
+@d:     dex
+@r:     rts
 
 ; SE3CF: clamp A to 0..X-1 (A >= $80 -> 0)
 se3cf:  stx ncol
@@ -496,6 +468,22 @@ se3cf:  stx ncol
 @z:     lda #0
 @r:     rts
 
+; one-way arrow (X = 0: column type D71D6, glyph 1C/1D at (-3,-12);
+; X = 1: row type D71D7, glyph 1A/1B at (+5,-4)); +1 if the type has bit2
+owg:    lda M+6,x
+        bpl @r
+        and #$04
+        cmp #$01
+        lda owgg,x
+        adc #0
+        ldy owgh,x
+        pha
+        lda owgl,x
+        tax
+        pla
+        jmp se33d
+@r:     rts
+
 ; SE359: OR X rows of Y bytes from the pattern at ($71xx, low byte A) into
 ; the buffer at rowp, going up one row (-32) each time
 se359:  sta pat
@@ -505,7 +493,7 @@ se359:  sta pat
         lda rowp+1
         sta wp+1
 s359r:  ldy #0
-s359c:  lda $7100,y
+s359c:  lda a:$0000,y
 pat = * - 2
         ora (wp),y
         sta (wp),y
@@ -526,23 +514,21 @@ s359n:  dex
 ; clipped to the map window
 se33d:  stx offl
         sty offh
-        ldx $71D4
-        stx bsx
-        ldx $71D5
-        stx bsy
-; LE341: glyph A at (bsx + offl, bsy + offh)
+        ldx M+4
+        ldy M+5
+; LE341: glyph A at (X + offl, Y + offh)
 le341:  sta gly
-        lda offl
+        txa
         clc
-        adc bsx
+        adc offl
         cmp #$28
         bcc @r
         cmp #$D2
         bcs @r
         sta zc
-        lda offh
+        tya
         clc
-        adc bsy
+        adc offh
         bmi @r
         cmp #$5A
         bcs @r
@@ -551,45 +537,6 @@ le341:  sta gly
         lda gly
         jmp Z_A695
 @r:     rts
-
-; SE36E-like: clear X rows of 20 bytes (stride 32) from (A,Y)
-clr0:   sta wp
-        sty wp+1
-        lda #0
-; fill X rows of 20 bytes at wp with A (SE371)
-fill20: sta mt
-@r:     ldy #19
-        lda mt
-@c:     sta (wp),y
-        dey
-        bpl @c
-        lda wp
-        clc
-        adc #32
-        sta wp
-        bcc @n
-        inc wp+1
-@n:     dex
-        bne @r
-        rts
-
-; SE383: clear 96 bytes down the column $64xx (A = low byte)
-clrcol: sta wp
-        lda #$64
-        sta wp+1
-        ldx #96
-        ldy #0
-@l:     tya
-        sta (wp),y
-        lda wp
-        clc
-        adc #32
-        sta wp
-        bcc @n
-        inc wp+1
-@n:     dex
-        bne @l
-        rts
 
 ; SE38E: A = origin -> lval = first multiple of 5 above it, A = 12*(lval-origin)
 se38e:  sta mt
@@ -622,16 +569,15 @@ se3a4:  sta zb
         lda lcoord
         sta zc
         lda #$C0
-        sta lflag
-        lda #$4E
+        ldx #$4E
         bne le3a9
 se3ca:  sta zc
         lda lcoord
         sta zb
         lda #$A0
+        ldx #$45
+le3a9:  stx ZV_E3B9
         sta lflag
-        lda #$45
-le3a9:  sta ZV_E3B9
         lda lval
         beq @r
         cmp #$20
@@ -652,46 +598,29 @@ le3a9:  sta ZV_E3B9
 ; SE3D8: marker for the 3D object IY (glyph mgly) if it is active
 se3d8:  ldy #1
         lda (ziyl),y
-        bpl @r
-        lda #<$71DE
-        sta zixl
-        sta rec
-        lda #>$71DE
-        sta zixh
-        sta rec+1
-        jsr Z_DC5F
-        lda #<$71DE
-        sta zixl
-        lda #>$71DE
-        sta zixh
-        jmp se3ea
-@r:     rts
-
-; SE3EA: marker for the map record rec (glyph mgly)
-se3ea:  ldy #5
-        lda (rec),y
+        bmi :+
+        rts
+:
+        ldx #$DE
+        jsr setix71
+        jsr Z_DC5F              ; record -> D71DE and CR
+        ldx #$DE
+        jsr setix71
+; SE3EA: marker for the map record in CR (glyph mgly)
+se3ea:  ldx CR+1
+        ldy CR+2
+        lda CR+5
         sta mpos
-        ldy #1
-        lda (rec),y
-        sta mcx
-        iny
-        lda (rec),y
-        sta mcy
-        ldy #0
-        lda (rec),y
+        lda CR
         and #$02
         beq @e403
-        ldy #3                  ; heading S/W: measure from the to-junction
-        lda (rec),y
-        sta mcx
-        iny
-        lda (rec),y
-        sta mcy
+        ldx CR+3                ; heading S/W: measure from the to-junction
+        ldy CR+4
         lda #$64
         sec
         sbc mpos
         sta mpos
-@e403:  lda mcx
+@e403:  txa
         sec
         sbc $71D0
         bcc @r
@@ -699,7 +628,7 @@ se3ea:  ldy #5
         bcs @r
         jsr se43b
         sta offl
-        lda mcy
+        tya
         sec
         sbc $71D1
         bcc @r
@@ -716,24 +645,20 @@ se3ea:  ldy #5
 @d:     inx
         sbc #9
         bcs @d
-        ldy #0
-        lda (rec),y
+        lda CR
         lsr a
-        bcs @ew
         txa
-        eor #$FF
-        sec
-        adc offh
-        sta offh
-        jmp @pr
-@ew:    txa
+        bcc @ns
         clc
         adc offl
         sta offl
-@pr:    lda #$29
-        sta bsx
-        lda #$56
-        sta bsy
+        bcc @pr                 ; (always)
+@ns:    eor #$FF
+        sec
+        adc offh
+        sta offh
+@pr:    ldx #$29
+        ldy #$56
         lda mgly
         jmp le341
 @r:     rts
