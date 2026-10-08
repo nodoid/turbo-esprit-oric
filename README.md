@@ -8,6 +8,15 @@ code. The 3D view is converted to the Oric's HIRES screen each frame.
 Needs a **64K Oric Atmos with a Microdisc drive** (Sedoric). The game uses
 the RAM under the ROM, so it does not fit a tape-only machine.
 
+| | |
+|---|---|
+| ![Main menu](docs/images/menu.png) | ![City select](docs/images/city.png) |
+| Main menu | City select |
+| ![Start of a game](docs/images/start.png) | ![Driving](docs/images/driving.png) |
+| Start of a game | Driving through Wellington |
+| ![Map](docs/images/map.png) | |
+| Map view (M) | |
+
 ## Differences from the Spectrum version
 
 - The game starts at the main menu. The city is chosen after PLAY or
@@ -77,3 +86,9 @@ for t in tests/test_*.py; do python3 $t; done
 `tools/harness.py` runs the whole game headless (disk mode, key presses,
 screenshots). `docs/PORTING.md` describes the memory map, the screen
 mapping and how the code is organised.
+
+## Licence
+
+The conversion is released under the DILLIGAF licence (see `LICENSE`).
+Turbo Esprit itself, along with its graphics, maps and music, remains the
+property of its copyright holders (Durell Software, 1986).
