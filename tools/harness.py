@@ -262,10 +262,14 @@ def main():
     ap.add_argument('--poke', action='append', default=[], help='tick:addr=val[,addr=val]')
     ap.add_argument('--watchfrom', type=int, default=0)
     ap.add_argument('--entry', type=lambda s: int(s, 0), default=None)
+    ap.add_argument('--disk', action='store_true',
+                    help='tap argument is build/turbo.bin: load it, the .ovl and the disk blobs '
+                         '(as the boot stub would) and emulate the resident sector reader')
+    ap.add_argument('--trace', type=int, default=0, help='print the last N PCs at the end')
     args = ap.parse_args()
 
     syms = {}
-    lblpath = args.labels or args.tap.replace('.tap', '.lbl')
+    lblpath = args.labels or os.path.splitext(args.tap)[0] + '.lbl'
     if os.path.exists(lblpath):
         for line in open(lblpath):
             parts = line.split()
@@ -283,7 +287,24 @@ def main():
         return int(x, 16)
 
     m = Machine()
-    start, end, hdr = load_tap(args.tap, m.ram)
+    blobs = {}
+    if args.disk:
+        base = args.tap
+        main_bin = open(base, 'rb').read()
+        m.ram[0x0600:0x0600 + len(main_bin)] = main_bin
+        ovl = open(base + '.ovl', 'rb').read()
+        m.ram[0xC000:0xC000 + len(ovl)] = ovl
+        m.romdis = True
+        lay = {}
+        for line in open(os.path.join(os.path.dirname(__file__), '..', 'src', 'disk.inc')):
+            p = line.split(';')[0].split('=')
+            if len(p) == 2:
+                lay[p[0].strip()] = int(p[1].strip().replace('$', '0x'), 0)
+        blobs[lay['MENU_TRACK']] = open(base + '.menu', 'rb').read()
+        blobs[lay['DASH_TRACK']] = open(base + '.dash', 'rb').read()
+        dread = lay['DREAD']
+    else:
+        start, end, hdr = load_tap(args.tap, m.ram)
     entry = args.entry if args.entry is not None else 0x0600
     mem = Mem(m)
     mpu = MPU(memory=mem, pc=entry)
@@ -305,9 +326,31 @@ def main():
     pa = pb = -1
     if args.profile:
         pa, pb = map(int, args.profile.split('-'))
+    from collections import deque
+    hist = deque(maxlen=max(args.trace, 1))
     while tick < args.ticks:
         if pa <= tick < pb:
             prof[mpu.pc] = prof.get(mpu.pc, 0) + 1
+        if args.trace:
+            hist.append(mpu.pc)
+            if mpu.pc < 0x0200 or 0x9E00 <= mpu.pc < 0xC000:
+                print('wild pc %04X; last:' % mpu.pc, ' '.join('%04X' % q for q in list(hist)[-args.trace:]))
+                break
+        if args.disk and mpu.pc == dread:
+            trk, sec, cnt = m.ram[0x05F0], m.ram[0x05F1], m.ram[0x05F2]
+            dest = m.ram[0x05F3] | (m.ram[0x05F4] << 8)
+            data = blobs.get(trk, b'')
+            off = (sec - 1) * 256
+            chunk = data[off:off + cnt * 256]
+            chunk += bytes(cnt * 256 - len(chunk))
+            for i, b in enumerate(chunk):
+                mem[dest + i] = b
+            m.ram[0x05F2] = 0
+            lo = m.ram[0x100 + ((mpu.sp + 1) & 0xFF)]
+            hi = m.ram[0x100 + ((mpu.sp + 2) & 0xFF)]
+            mpu.sp = (mpu.sp + 2) & 0xFF
+            mpu.pc = ((hi << 8) | lo) + 1
+            continue
         mpu.step()
         m.cycles = mpu.processorCycles
         if (m.ier & 0x40) and m.t1_count() > m.t1_ack and not (mpu.p & mpu.INTERRUPT):
@@ -343,7 +386,7 @@ def main():
                 raw.write(img)
     if prof:
         labs = []
-        for line in open(args.labels or args.tap.replace('.tap', '.lbl')):
+        for line in open(lblpath):
             parts = line.split()
             if len(parts) >= 3:
                 name = parts[2].lstrip('.')
@@ -363,6 +406,8 @@ def main():
         tot = sum(agg.values())
         for nm, n in sorted(agg.items(), key=lambda x: -x[1])[:25]:
             print("%6.2f%% %s" % (100.0 * n / tot, nm))
+    if args.trace:
+        print('last PCs:', ' '.join('%04X' % p for p in list(hist)[-args.trace:]))
     print("done: %d cycles, pc=%04X" % (m.cycles, mpu.pc))
 
 

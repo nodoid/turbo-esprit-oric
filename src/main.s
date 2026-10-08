@@ -78,11 +78,8 @@ start:  sei
         inx
         bne @p2
         jsr hw_init
-        ; HIRES, the three text lines below it blank (black)
-        ldx #7
-@sp:    sta CHARSET + $20*8,x   ; space glyph
-        dex
-        bpl @sp
+        ; HIRES, the three text lines below it blank (black); the character
+        ; set at $9800 is part of the program file
         ldx #119
         lda #$20
 @t:     sta TEXTLINES,x
@@ -188,6 +185,7 @@ play_game:
         lda #$80
         sta $7793
         jsr Z_9E1E
+        jsr view_init           ; A-pillar next to the 3D view (Oric screen)
         jsr Z_E01D
         lda #0
         sta $750B
