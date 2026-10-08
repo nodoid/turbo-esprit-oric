@@ -52,7 +52,7 @@
         ZVIMPORT $A093          ; steering-wheel state
         ZVIMPORT $B161          ; object id found by SB91B
         ZVIMPORT $B8F9          ; saved object record (DB8FE = +5)
-        ZVIMPORT $FD6B          ; left junction table (DFD77 = record 1)
+        ZVIMPORT $FD60          ; left junction table (DFD77 = record 1)
 
         .export T_EAB5, T_E94D, T_F471, T_F30D
 
@@ -69,6 +69,8 @@ p_side: .res 1
         .word T_EAB5+8
         ZLABEL $E967, 2         ; speed (signed), revs
         .byte $00, $03
+ZV_E968 = ZV_E967 + 1           ; revs (read by world and dash)
+        .export ZV_E968
         ZVAR $E969, 1           ; key code of the last processed press
         ZVAR $EADF, 1           ; previous pass key bits
         ZVAR $EAE0, 2           ; obstacle cell found by the scan ahead
@@ -2016,9 +2018,9 @@ ZPROC $F4BA
         jsr Z_F4EF
         bne :+
         jmp Z_B412
-:       lda #<(ZV_FD6B+12)      ; (;?) DFD77
+:       lda #<(ZV_FD60+$0B+12)      ; (;?) DFD77
         sta zl
-        lda #>(ZV_FD6B+12)
+        lda #>(ZV_FD60+$0B+12)
         sta zh
         lda $75F2
         lsr a

@@ -6,7 +6,8 @@ TAP     = $(BUILD)/turbo.tap
 ORIC    = $(HOME)/Downloads/Oric v1.8.3/Oric.app
 
 SRCS    = $(wildcard src/*.s)
-DSRCS   = $(wildcard data/*.s)
+# generated data assembled as modules of their own (others are .included)
+DSRCS   = data/view_data.s data/gfx_data.s
 OBJS    = $(patsubst src/%.s,$(BUILD)/%.o,$(SRCS)) $(patsubst data/%.s,$(BUILD)/data_%.o,$(DSRCS))
 
 all: $(TAP)
@@ -30,6 +31,7 @@ extract:
 	python3 tools/gen_snd.py
 	python3 tools/gen_render.py
 	python3 tools/gen_world.py
+	python3 tools/gen_gfx.py
 
 $(BUILD):
 	mkdir -p $(BUILD)
