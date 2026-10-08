@@ -14,7 +14,7 @@ OBJS    = $(patsubst src/%.s,$(BUILD)/%.o,$(SRCS)) $(patsubst data/%.s,$(BUILD)/
 
 all: $(DSK)
 
-$(DSK): $(BUILD)/turbo.bin $(BUILD)/boot.bin tools/mkdsk.py src/disk.inc
+$(DSK): $(BUILD)/turbo.bin $(BUILD)/boot.bin tools/mkdsk.py src/disk.inc data/zxram.bin
 	TAP2DSK=$(TAP2DSK) python3 tools/mkdsk.py $@ $(BUILD)/turbo.bin $(BUILD)/boot.bin \
 		$(BUILD)/turbo.bin.ovl $(BUILD)/turbo.bin.menu $(BUILD)/turbo.bin.dash
 

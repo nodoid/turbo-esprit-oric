@@ -302,6 +302,8 @@ def main():
                 lay[p[0].strip()] = int(p[1].strip().replace('$', '0x'), 0)
         blobs[lay['MENU_TRACK']] = open(base + '.menu', 'rb').read()
         blobs[lay['DASH_TRACK']] = open(base + '.dash', 'rb').read()
+        zx = open(os.path.join(os.path.dirname(__file__), '..', 'data', 'zxram.bin'), 'rb').read()
+        blobs[lay['CITY_TRACK']] = zx[0x686B - 0x5B00:0x6DB7 - 0x5B00]
         dread = lay['DREAD']
     else:
         start, end, hdr = load_tap(args.tap, m.ram)

@@ -19,6 +19,7 @@
 ; zero-page temporaries in the Z80 alternate register set (see below).
 
         .include "zx.inc"
+        .include "disk.inc"
         .include "snd.inc"
         .include "hw.inc"
 
@@ -103,6 +104,27 @@ ZPROC $FD11
         sta tables+80,x
         dex
         bpl @tl
+        jmp Z_FA1B              ; Oric: straight to the main menu; the
+                                ; city is chosen when a game starts
+
+; choose_city: (Oric) load the four city maps from the disk to where the
+; original had them ($686B, overwritten by the 3D view during a game),
+; show the original city-select screen (FD11/FD7C) and copy the chosen map.
+choose_city:
+        jsr music_stop
+        lda #CITY_TRACK
+        sta D_TRK
+        lda #1
+        sta D_SEC
+        lda #6                  ; $686B-$6DB6, whole sectors
+        sta D_CNT
+        lda #<$686B
+        sta D_DEST
+        lda #>$686B
+        sta D_DEST+1
+        jsr DREAD
+        ldx #$FF                ; no music while waiting for the key
+        stx nomus
         jsr Z_A4C9
 city_txt:
         .byte $8F,$20,$41,$FF,$50,$18,"SELECT A CITY",$FF,$48,$40,"1",$FE,$20
@@ -113,10 +135,7 @@ cn4:    .byte "MINSTER",$FF,$50,$98,"ENTER 1 TO 4",$00
 ZPROC $FD7C
         ldx #4                  ; LAST-K: a newly pressed '1'..'4'
         jsr pick
-        jsr Z_FD91
-        ldx #$FF                ; SP = 0x7300
-        txs
-        jmp Z_FA1B
+        jmp Z_FD91
 
 ; FD91 - A = city 0..3: copy its 0x153-byte block to D9282 and its title
 ; ("<name> MAP", placed as in the original table FDCB) to DBACC.
@@ -215,6 +234,7 @@ opt_hi: .hibytes Z_FB23-1, Z_FBD6-1, Z_F85D-1, Z_F84E-1, Z_FB99-1, Z_FB51-1, Z_F
 ; ---------------------------------------------------------------------------
 ; 7 PRACTICE: no enemy cars, 1 life, skill 1, not recorded
 ZPROC $FB19
+        jsr choose_city
         lda #0
         sta $7611
         lda #'1'
@@ -224,6 +244,7 @@ ZPROC $FB19
         jmp play_game
 ; 8 PLAY, then record the result (FACA)
 ZPROC $FABC
+        jsr choose_city
         lda #$FF
         sta $7611
         lda ZV_FA38

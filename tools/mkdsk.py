@@ -87,8 +87,11 @@ def main():
     assert img[:8] == b'ORICDISK'
     sides, ntracks, nsec = struct.unpack_from('<iii', img, 8)
     assert sides == 1 and nsec == SECTORS
+    zxram = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data',
+                              'zxram.bin'), 'rb').read()
+    cities = zxram[0x686B - 0x5B00:0x6DB7 - 0x5B00]   # the four city maps
     blobs = [(lay['OVL_TRACK'], ovl, 64), (lay['MENU_TRACK'], menu, None),
-             (lay['DASH_TRACK'], dash, None)]
+             (lay['DASH_TRACK'], dash, None), (lay['CITY_TRACK'], cities, 6)]
     total = max(t + ((len(d) + 255) // 256 + SECTORS - 1) // SECTORS for t, d, _ in blobs)
     secs = [img[256 + i * 256:256 + (i + 1) * 256] for i in range(ntracks * SECTORS)]
     secs += [bytes(256)] * (total * SECTORS - len(secs))
