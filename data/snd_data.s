@@ -5,7 +5,7 @@
 ; Then the sound-effect scripts.
 
         .export snd_ptab, snd_tunes, fx_tab, fx_prio, fx_crashtab
-        .rodata
+        .segment "RODATA4"
 
 ; AY tone periods (1 MHz) of the original notes: half-period T / 28;
 ; index 1 (the lowest note) has period $100 + its byte

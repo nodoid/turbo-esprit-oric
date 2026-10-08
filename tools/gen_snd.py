@@ -313,7 +313,7 @@ def main():
          '; frame is silent; +$40: 8 frames, else a frames byte follows);',
          '; $FE lo hi n = n runs from lo hi; $FF = end.',
          '; Then the sound-effect scripts.',
-         '', '        .export snd_ptab, snd_tunes, fx_tab, fx_prio, fx_crashtab', '        .rodata', '']
+         '', '        .export snd_ptab, snd_tunes, fx_tab, fx_prio, fx_crashtab', '        .segment "RODATA4"', '']
     per = [ay_period(PER, n) for n in notes]
     assert all(p < 256 for p in per[1:]) and 256 <= per[0] < 512
     L.append('; AY tone periods (1 MHz) of the original notes: half-period T / 28;')

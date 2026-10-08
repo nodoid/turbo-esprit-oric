@@ -5,7 +5,9 @@ original tape, which the Oric keeps at the same addresses.
 usage: gen_zxram.py [orig/TurboEsprit.tzx] [data/zxram.bin]
 Changes from the tape image: the lane grid $5C00-$63FF is zeroed (cleared at
 run time anyway) and the key table at $7524 holds Oric key codes
-(matrix row, column mask, 0) for the default keys J L K A S M T.
+(matrix row, column mask, 0) for the default keys J L K A S M T, and the
+player's car is red (ink colour byte +3 of its record template at $74D3 and of
+the record itself at $7792; the original draws it in black like the traffic).
 """
 import sys
 import zxtape
@@ -21,6 +23,8 @@ def main():
     z = bytearray(m[0x5B00:0x7BBE])
     z[0x5C00 - 0x5B00:0x6400 - 0x5B00] = bytes(0x800)
     z[0x7524 - 0x5B00:0x7524 - 0x5B00 + len(ORIC_KEYS)] = ORIC_KEYS
+    for rec in (0x74D3, 0x7792):              # player's car: red ink (Spectrum colour 2)
+        z[rec + 3 - 0x5B00] = 0x02
     open(out, 'wb').write(z)
 
 

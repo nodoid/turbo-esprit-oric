@@ -665,7 +665,7 @@ patch_xor:
         rts
 
 
-        .segment "RODATA"
+        .segment "RODATAH2"
 ; operand addresses for patch_xor
 lxlo:
 .repeat 28, i

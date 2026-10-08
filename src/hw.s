@@ -182,6 +182,8 @@ key_row:
         sta VIA_PCR
         nop
         nop
+        nop
+        nop
         lda VIA_ORB
         and #$08
         cmp #$08

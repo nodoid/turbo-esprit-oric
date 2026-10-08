@@ -14,8 +14,8 @@ OBJS    = $(patsubst src/%.s,$(BUILD)/%.o,$(SRCS)) $(patsubst data/%.s,$(BUILD)/
 
 all: $(DSK)
 
-$(DSK): $(BUILD)/turbo.bin $(BUILD)/boot.bin data/loadscr.bin tools/mkdsk.py src/disk.inc
-	TAP2DSK=$(TAP2DSK) python3 tools/mkdsk.py $@ data/loadscr.bin $(BUILD)/turbo.bin $(BUILD)/boot.bin \
+$(DSK): $(BUILD)/turbo.bin $(BUILD)/boot.bin tools/mkdsk.py src/disk.inc
+	TAP2DSK=$(TAP2DSK) python3 tools/mkdsk.py $@ $(BUILD)/turbo.bin $(BUILD)/boot.bin \
 		$(BUILD)/turbo.bin.ovl $(BUILD)/turbo.bin.menu $(BUILD)/turbo.bin.dash
 
 $(BUILD)/boot.bin: src/boot/boot.s src/disk.inc src/hw.inc | $(BUILD)
@@ -33,7 +33,6 @@ $(BUILD)/turbo.bin: $(OBJS) src/turbo.cfg
 
 # regenerate data/ from the original Spectrum tape (orig/TurboEsprit.tzx)
 extract:
-	python3 tools/mkloadscr.py orig/TurboEsprit.tzx data/loadscr.bin
 	cd tools && python3 gen_zxram.py ../orig/TurboEsprit.tzx ../data/zxram.bin
 	python3 tools/gen_objects.py orig/TurboEsprit.tzx data/objects_data.s
 	python3 tools/gen_snd.py

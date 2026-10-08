@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Build the bootable Oric disk (Microdisc, Sedoric 3) for the 64K version.
 
-usage: mkdsk.py out.dsk SCREEN.bin MAIN.bin BOOT.bin OVERLAY.bin MENU.bin DASH.bin
+usage: mkdsk.py out.dsk MAIN.bin BOOT.bin OVERLAY.bin MENU.bin DASH.bin
 
 Needs tap2dsk (Fabrice Frances' Euphoric tool, which carries Sedoric 3):
 set TAP2DSK to its binary (default: tap2dsk on the PATH).
 
 How the disk boots:
   * Sedoric starts and runs the init string
-        HIRES:LOAD"SCR.BIN":LOAD"GAME.BIN":LOAD"BOOT.BIN":CALL#500
-    loading the loading screen ($A000), the main part of the game ($0600..)
-    and a small machine-code stub ($0500).
+        HIRES:LOAD"GAME.BIN":LOAD"BOOT.BIN":CALL#500
+    loading the main part of the game ($0600..) and a small machine-code
+    stub ($0500).
   * The overlay part of the game (16K, for the RAM under the ROM) is not a
     Sedoric file: it is stored as raw sectors on fixed tracks (src/disk.inc).
     The stub (src/boot/boot.s) switches the ROM - and with it Sedoric, which
@@ -70,19 +70,18 @@ def layout():
 
 
 def main():
-    out, scr_p, main_p, boot_p, ovl_p, menu_p, dash_p = sys.argv[1:8]
-    scr, game, boot, ovl, menu, dash = (open(p, 'rb').read()
-                                        for p in (scr_p, main_p, boot_p, ovl_p, menu_p, dash_p))
+    out, main_p, boot_p, ovl_p, menu_p, dash_p = sys.argv[1:7]
+    game, boot, ovl, menu, dash = (open(p, 'rb').read()
+                                   for p in (main_p, boot_p, ovl_p, menu_p, dash_p))
     lay = layout()
     tap2dsk = os.environ.get('TAP2DSK', 'tap2dsk')
     with tempfile.TemporaryDirectory() as tmp:
         tap = os.path.join(tmp, 'disk.tap')
         with open(tap, 'wb') as f:
-            f.write(tape_file('SCR', 0xA000, scr))
             f.write(tape_file('GAME', 0x0600, game))
             f.write(tape_file('BOOT', 0x0500, boot))
         old = os.path.join(tmp, 'old.dsk')
-        subprocess.run([tap2dsk, '-iHIRES:LOAD"SCR.BIN":LOAD"GAME.BIN":LOAD"BOOT.BIN":CALL#500',
+        subprocess.run([tap2dsk, '-iHIRES:LOAD"GAME.BIN":LOAD"BOOT.BIN":CALL#500',
                         '-nTURBO ESPRIT', tap, old], check=True, capture_output=True)
         img = open(old, 'rb').read()
     assert img[:8] == b'ORICDISK'

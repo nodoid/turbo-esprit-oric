@@ -27,6 +27,7 @@
         .export gfx_linebase, gfx_lz, gfx_glyph, gfx_textinit, gfx_arng, gfx_km
         .export TEXTROW0, TEXTROW1
         .exportzp lzs, lzd, lzc
+        .export gfx_squeeze
         .import T_FEXC, T_FEXCC, T_AA2F, T_A98E, T_A0BF  ; data/gfx_data.s
 
 TEXTROW0 = $BF68                ; Spectrum char row 22 (PENALTY/SCORE)
@@ -124,11 +125,19 @@ gch:    .res 1
 gbufh:  .res 8
 gbufl:  .res 8
 plotv:  .res 2
+xs:     .res 1                  ; squeeze mode: Spectrum x of the line
+sb2:    .res 1
+gm2:    .res 1
 lk0:    .res 1
 lk1:    .res 1
 lk2:    .res 1
 
         .segment "DATA"
+; gfx_squeeze: 0 = exact (Oric x = x + 6); nonzero = text-page mode for
+; full-width pages: screen-mode x maps to ((x*7)>>3) + 6 (glyphs keep their
+; 8 pixels at a 7-pixel pitch; lines skip one x step in 8).  Buffer mode
+; and the text rows are not affected.
+gfx_squeeze:.byte 0
 gfx_rc_row: .byte 0             ; gfx_recolour: first Spectrum pixel row
 gfx_rc_n:   .byte 8             ;   number of pixel rows
 
@@ -464,7 +473,10 @@ lbase:  sta t0
 
 ; xcr: A = Spectrum x -> A = Oric column of pixel x+6, t3 = offset 0..5
 ; (X kept, Y destroyed)
-xcr:    pha
+xcr:    ldy gfx_squeeze
+        beq :+
+        jsr sqx
+:       pha
         lsr
         tay
         lda divtab,y
@@ -481,6 +493,7 @@ xcr:    pha
         clc
         adc #1
         rts
+
 
 ; addrmask (SA672): X=x, Y=y -> ptr/Y(index)/msk for the current target,
 ; A684 = mask.  (Does not store A685.)
@@ -708,6 +721,9 @@ up_s:   lda ptr
 
 steptab:.word right_b, left_b, down_b, up_b
         .word right_s, left_s, down_s, up_s
+        .word right_q, left_q, down_s, up_s
+
+
 
 ; store ptr / Y / msk as the current line position
 stpos:  lda msk
@@ -735,13 +751,18 @@ line:   lda ZV_A684             ; current position -> ptr / Y / msk; moff
         stx ptr
         stx moff
         ldy ZV_A685
-        jmp :++
+        jmp ln_p
 :       lda ZV_A685
         sta ptr
         ldy pcol
         lda #8
-        sta moff
-:       sty ly
+        ldx gfx_squeeze
+        beq :+
+        lda ZV_A691
+        sta xs
+        lda #16
+:       sta moff
+ln_p:   sty ly
         lda ZV_A5C4             ; plot routine (cached: op + target)
         ldx ZV_A5C4+1
         cmp lk0
@@ -1072,7 +1093,15 @@ gscr_h: lda ZV_A687
         sta ptr
         lda ZV_A687+1
         sta ptr+1
-        lda tcol
+        lda gfx_squeeze
+        beq :+
+        lda ZV_A691             ; text-page mode: the whole glyph at the
+        sec                     ; squeezed x of this character
+        sbc #8
+        jsr xcr
+        sta t2
+        jmp gal
+:       lda tcol
         sta t2
         lda tr
         sta t3
@@ -1127,14 +1156,18 @@ gs_sh = *
         sta fp+1
 ; gal: 8 aligned Spectrum bytes (rows of (fp)) at column t2, offset t3
 ; (0,2,4) on the screen, op gopm
-gal:    ldx t3
+gal:    lda t3
+        asl
+        tax
         lda galtab,x
         sta gal_j+1
         lda galtab+1,x
         sta gal_j+2
+        ldx t3
         lda #$FF
         sta gm0
         sta gm1
+        sta gm2
         ldy #$05                ; ora zp
         lda gopm
         bne :+
@@ -1142,11 +1175,19 @@ gal:    ldx t3
         sta gm0
         lda gnm1,x
         sta gm1
+        lda #$DF
+        sta gm2
 :       cmp #2
         bne :+
         ldy #$45                ; eor zp
 :       sty gal_o0
         sty gal_o1
+        lda gfx_squeeze         ; (gal_5 is in the menu blob)
+        beq :+
+        tya
+        ora #$08                ; (absolute form for sb2)
+        sta gal_o2
+:
         ldx #0                  ; X = row
 gal_r:  txa
         tay
@@ -1215,11 +1256,12 @@ gal_n:  lda ptr
         inc ptr+1
 :       inx
         cpx #8
-        bne gal_r
-        rts
-galtab: .word gal_0, gal_2, gal_4
-gnm0:   .byte $C0, 0, $F0, 0, $FC
-gnm1:   .byte $CF, 0, $C3, 0, $C0
+        beq :+
+        jmp gal_r
+:       rts
+galtab: .word gal_0, gal_1, gal_2, gal_3, gal_4, gal_5
+gnm0:   .byte $C0, $E0, $F0, $F8, $FC, $FE
+gnm1:   .byte $CF, $C7, $C3, $C1, $C0, $C0
 gm0:    .byte $FF
 gm1:    .byte $FF
 
@@ -1403,147 +1445,7 @@ gfx_cls:pha
         sta TEXTROW0+80
         rts
 
-; gfx_attr_rows: A = attribute, X = first char row, Y = number of rows.
-; Rewrites columns 0/1 and bit 7 of the pixel bytes (pixels kept).
-gfx_attr_rows:
-        pha
-        lda #$3F
-        sta km
-        txa
-        asl
-        asl
-        asl
-        adc #4
-        tax
-        tya
-        asl
-        asl
-        asl
-        tay
-        pla
-        jmp arng
 
-; gfx_recolour: A = attribute, X = first char column, Y = last char column,
-; gfx_rc_row / gfx_rc_n = Spectrum pixel rows.  Puts serial attributes just
-; before (1-2 columns) and after (1-2 columns) the area, restoring the line's
-; base colours (read from columns 0/1), and sets the inverse bit of the
-; pixel bytes inside.  Each attribute column blanks 6 pixels.
-gfx_recolour:
-        pha
-        tya
-        asl
-        asl
-        asl
-        ora #7
-        jsr xcr
-        sta rc_ce
-        txa
-        asl
-        asl
-        asl
-        jsr xcr
-        sta rc_cs
-        pla
-        jsr attrtpl
-        ldx #0                  ; area: inverse (black ink) or ink K
-        lda kk
-        bne :+
-        lda #7
-        sec
-        sbc pp
-        sta rc_pa
-        lda #7
-        ldx #$80
-        bne :++
-:       ldy pp
-        sty rc_pa
-:       sta rc_ia
-        stx rc_va
-        lda gfx_rc_row
-        sta t2
-        lda gfx_rc_n
-        sta gry
-rc_ln:  lda t2
-        jsr gfx_linebase
-        ldy #0                  ; base colours of the line
-        lda (ptr),y
-        tax
-        and #$80
-        sta rc_vb
-        txa
-        and #7
-        sta rc_ib
-        ldy #0
-        sty rc_pb
-        txa
-        and #$10
-        beq rc_b                ; column 0 = ink: paper black
-        stx rc_pb               ; (bits 3-7 masked below)
-        lda #7
-        sta rc_ib
-        lda rc_vb
-        bne rc_b
-        iny
-        lda (ptr),y
-        cmp #8
-        bcs rc_b
-        sta rc_ib
-rc_b:   lda rc_pb
-        and #7
-        sta rc_pb
-        lda rc_ia
-        cmp rc_ib
-        beq :+
-        ora rc_vb
-        ldx rc_cs
-        dex
-        dex
-        jsr rcput
-        lda rc_ib
-        ora rc_vb
-        ldx rc_ce
-        inx
-        inx
-        jsr rcput
-:       lda rc_pa
-        ora #$10
-        ora rc_va
-        ldx rc_cs
-        dex
-        jsr rcput
-        lda rc_pb
-        ora #$10
-        ora rc_vb
-        ldx rc_ce
-        inx
-        jsr rcput
-        ldy rc_cs
-:       cpy #40
-        bcs :++
-        lda (ptr),y
-        asl
-        bpl :+
-        lsr
-        ora rc_va
-        sta (ptr),y
-:       cpy rc_ce
-        iny
-        bcc :--
-:       inc t2
-        dec gry
-        beq :+
-        jmp rc_ln
-:       rts
-rcput:  cpx #40
-        bcs :+
-        cpx #0
-        beq :+
-        pha
-        txa
-        tay
-        pla
-        sta (ptr),y
-:       rts
 
 ; gfx_textinit: text rows: ink yellow / green, blank.  (The ROM font is
 ; loaded with the program into the HIRES charset: segment CHARSET, chars
@@ -1949,3 +1851,237 @@ fk_top: .byte $80, $20
 fk_full:.byte $FF, $3F
 fk_w:   .byte 8, 6
 fk_w1:  .byte 9, 7
+
+; ===========================================================================
+; Menu-only code (segment MCODE: the menu blob at $5C00, in memory only while
+; the menus / score tables / legal screen run).  The text-page mode parts
+; (gfx_squeeze) are reached only while gfx_squeeze is set, i.e. in menus.
+        .segment "MCODE"
+; gfx_attr_rows: A = attribute, X = first char row, Y = number of rows.
+; Rewrites columns 0/1 and bit 7 of the pixel bytes (pixels kept).
+gfx_attr_rows:
+        pha
+        lda #$3F
+        sta km
+        txa
+        asl
+        asl
+        asl
+        adc #4
+        tax
+        tya
+        asl
+        asl
+        asl
+        tay
+        pla
+        jmp arng
+
+; gfx_recolour: A = attribute, X = first char column, Y = last char column,
+; gfx_rc_row / gfx_rc_n = Spectrum pixel rows.  Puts serial attributes just
+; before (1-2 columns) and after (1-2 columns) the area, restoring the line's
+; base colours (read from columns 0/1), and sets the inverse bit of the
+; pixel bytes inside.  Each attribute column blanks 6 pixels.
+gfx_recolour:
+        pha
+        tya
+        asl
+        asl
+        asl
+        ora #7
+        jsr xcr
+        sta rc_ce
+        txa
+        asl
+        asl
+        asl
+        jsr xcr
+        sta rc_cs
+        pla
+        jsr attrtpl
+        ldx #0                  ; area: inverse (black ink) or ink K
+        lda kk
+        bne :+
+        lda #7
+        sec
+        sbc pp
+        sta rc_pa
+        lda #7
+        ldx #$80
+        bne :++
+:       ldy pp
+        sty rc_pa
+:       sta rc_ia
+        stx rc_va
+        lda gfx_rc_row
+        sta t2
+        lda gfx_rc_n
+        sta gry
+rc_ln:  lda t2
+        jsr gfx_linebase
+        ldy #0                  ; base colours of the line
+        lda (ptr),y
+        tax
+        and #$80
+        sta rc_vb
+        txa
+        and #7
+        sta rc_ib
+        ldy #0
+        sty rc_pb
+        txa
+        and #$10
+        beq rc_b                ; column 0 = ink: paper black
+        stx rc_pb               ; (bits 3-7 masked below)
+        lda #7
+        sta rc_ib
+        lda rc_vb
+        bne rc_b
+        iny
+        lda (ptr),y
+        cmp #8
+        bcs rc_b
+        sta rc_ib
+rc_b:   lda rc_pb
+        and #7
+        sta rc_pb
+        lda rc_ia
+        cmp rc_ib
+        beq :+
+        ora rc_vb
+        ldx rc_cs
+        dex
+        dex
+        jsr rcput
+        lda rc_ib
+        ora rc_vb
+        ldx rc_ce
+        inx
+        inx
+        jsr rcput
+:       lda rc_pa
+        ora #$10
+        ora rc_va
+        ldx rc_cs
+        dex
+        jsr rcput
+        lda rc_pb
+        ora #$10
+        ora rc_vb
+        ldx rc_ce
+        inx
+        jsr rcput
+        ldy rc_cs
+:       cpy #40
+        bcs :++
+        lda (ptr),y
+        asl
+        bpl :+
+        lsr
+        ora rc_va
+        sta (ptr),y
+:       cpy rc_ce
+        iny
+        bcc :--
+:       inc t2
+        dec gry
+        beq :+
+        jmp rc_ln
+:       rts
+rcput:  cpx #40
+        bcs :+
+        cpx #0
+        beq :+
+        pha
+        txa
+        tay
+        pla
+        sta (ptr),y
+:       rts
+
+; sqx: A = x -> (x*7) >> 3 (text-page mode)
+sqx:    sta t0
+        lda #0
+        sta t1
+        lda t0
+        asl
+        rol t1
+        asl
+        rol t1
+        asl
+        rol t1
+        sec
+        sbc t0
+        bcs :+
+        dec t1
+:       lsr t1
+        ror
+        lsr t1
+        ror
+        lsr t1
+        ror
+        rts
+
+gal_1:  sta gv                  ; r = 1: 5 + 3 (text-page mode)
+        lsr
+        lsr
+        lsr
+        sta sb0
+        lda gv
+        asl
+        asl
+        asl
+        and #$38
+        jmp gal_a
+gal_3:  sta gv                  ; r = 3: 3 + 5 (text-page mode)
+        lsr
+        lsr
+        lsr
+        lsr
+        lsr
+        sta sb0
+        lda gv
+        asl
+        and #$3E
+        jmp gal_a
+gal_5:  sta gv                  ; r = 5: 1 + 6 + 1 (text-page mode)
+        and #1
+        beq :+
+        lda #$20
+:       sta sb2
+        ldy t2
+        iny
+        iny
+        cpy #40
+        bcs :+
+        lda (ptr),y
+        asl
+        bpl :+
+        ror
+        and gm2
+gal_o2 = *
+        ora sb2
+        sta (ptr),y
+:       lda gv
+        asl
+        lda #0
+        rol
+        sta sb0
+        lda gv
+        lsr
+        and #$3F
+        jmp gal_a
+
+; text-page mode x steps: Oric x moves on 7 of every 8 Spectrum x steps
+right_q:lda xs
+        inc xs
+        and #7
+        beq :+
+        jmp right_s
+:       rts
+left_q: dec xs
+        lda xs
+        and #7
+        beq :+
+        jmp left_s
+:       rts
