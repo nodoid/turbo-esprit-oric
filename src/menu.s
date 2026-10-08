@@ -614,19 +614,23 @@ scan:   sta mtmp
 ZPROC $F9C4
         lda #0
         sta nomus
-getkey: jsr anykey
-        sta held
+getkey: jsr Z_F99F              ; the character key down on entry (if any)
+        bcs @h0                 ; must be released before it counts; keys
+        tax                     ; without a character (shift, ctrl...) never
+        bne @h1                 ; block the next key
+@h0:    lda #0
+@h1:    sta held
 @l:     jsr music_wait
         jsr blink
         jsr Z_F99F
         bcc @key
-        lda #0
+@clr:   lda #0
         sta held
         beq @l
 @key:   bit nomus
         bvs @any
         tax
-        beq @l                  ; no character: ignored
+        beq @clr                ; no character: ignored (and not held)
 @any:   ldx held
         bne @l                  ; still the key that was down on entry
         rts

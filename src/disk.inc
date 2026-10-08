@@ -6,6 +6,7 @@ OVL_TRACK   = 40        ; overlay part of the game ($C000..), 64 sectors
 MENU_TRACK  = 44        ; menus / score tables / copyright screen ($5C00..)
 DASH_TRACK  = 46        ; packed dashboard picture ($6900..)
 CITY_TRACK  = 47        ; the four city maps ($686B.., 6 sectors)
+HID_TRACK   = 48        ; tables at $9C00 (alternate charset area), 2 sectors
 
 ; resident reader: set the request, then jsr DREAD.  Interrupts are masked
 ; while it reads; it returns with the I flag as it found it.

@@ -76,6 +76,19 @@ start:  sei
         inx
         bne @p2
         jsr hw_init
+        ; the tables at $9C00 (beyond the Oric font at $9900, which the
+        ; program file must not overwrite) come from the disk
+        lda #HID_TRACK
+        sta D_TRK
+        lda #1
+        sta D_SEC
+        lda #2
+        sta D_CNT
+        lda #<$9C00
+        sta D_DEST
+        lda #>$9C00
+        sta D_DEST+1
+        jsr DREAD
         ; HIRES, the three text lines below it blank (black); the character
         ; set at $9800 is part of the program file
         ldx #119

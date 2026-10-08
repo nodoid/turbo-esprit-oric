@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the bootable Oric disk (Microdisc, Sedoric 3) for the 64K version.
 
-usage: mkdsk.py out.dsk MAIN.bin BOOT.bin OVERLAY.bin MENU.bin DASH.bin
+usage: mkdsk.py out.dsk MAIN.bin BOOT.bin OVERLAY.bin MENU.bin DASH.bin HID.bin
 
 Needs tap2dsk (Fabrice Frances' Euphoric tool, which carries Sedoric 3):
 set TAP2DSK to its binary (default: tap2dsk on the PATH).
@@ -70,9 +70,9 @@ def layout():
 
 
 def main():
-    out, main_p, boot_p, ovl_p, menu_p, dash_p = sys.argv[1:7]
-    game, boot, ovl, menu, dash = (open(p, 'rb').read()
-                                   for p in (main_p, boot_p, ovl_p, menu_p, dash_p))
+    out, main_p, boot_p, ovl_p, menu_p, dash_p, hid_p = sys.argv[1:8]
+    game, boot, ovl, menu, dash, hid = (open(p, 'rb').read()
+                                        for p in (main_p, boot_p, ovl_p, menu_p, dash_p, hid_p))
     lay = layout()
     tap2dsk = os.environ.get('TAP2DSK', 'tap2dsk')
     with tempfile.TemporaryDirectory() as tmp:
@@ -91,7 +91,8 @@ def main():
                               'zxram.bin'), 'rb').read()
     cities = zxram[0x686B - 0x5B00:0x6DB7 - 0x5B00]   # the four city maps
     blobs = [(lay['OVL_TRACK'], ovl, 64), (lay['MENU_TRACK'], menu, None),
-             (lay['DASH_TRACK'], dash, None), (lay['CITY_TRACK'], cities, 6)]
+             (lay['DASH_TRACK'], dash, None), (lay['CITY_TRACK'], cities, 6),
+             (lay['HID_TRACK'], hid, 2)]
     total = max(t + ((len(d) + 255) // 256 + SECTORS - 1) // SECTORS for t, d, _ in blobs)
     secs = [img[256 + i * 256:256 + (i + 1) * 256] for i in range(ntracks * SECTORS)]
     secs += [bytes(256)] * (total * SECTORS - len(secs))

@@ -758,7 +758,7 @@ def lz2_decompress(c):
 
 # chars of the ROM font that use pixel column 0 or 7 (or the ROM-code
 # 'glyphs' 30/31 printed by sub-stream 21): kept as full 8-bit glyphs
-FONT_EXC = (30, 31, 84, 89, 95, 127)
+FONT_EXC = (30, 31)       # ROM code bytes printed by sub-stream 21 (the Oric font does the rest)
 
 
 # sub-stream bytes read by the live streams (wheel, needles, gauges); found
@@ -794,16 +794,11 @@ def gen(tape=None):
     # $9800-$98FF (chars 0-31: serial attributes in the text rows, never
     # shown) holds small tables; chars 32-127 at $9900 are the Spectrum ROM
     # font, pixel columns 1-6 (also used by the engine, shifted left)
-    for c in FONT_EXC[2:]:
-        assert any(b & 0x81 for b in rom[0x3D00 + 8 * (c - 32):0x3D08 + 8 * (c - 32)])
-    for c in range(32, 128):
-        if c not in FONT_EXC:
-            assert not any(b & 0x81 for b in rom[0x3D00 + 8 * (c - 32):0x3D08 + 8 * (c - 32)])
     out += ['        .segment "CHARSET"',
             '        .export T_FEXC, T_FEXCC, T_AA2F, T_A98E, T_A3D6, T_A47B',
             'cs_start:',
-            '; full 8-bit glyphs of the ROM chars that use pixel column 0 or 7 (and',
-            '; ROM codes 30/31, ROM code bytes printed by sub-stream 21)', 'T_FEXCC:']
+            '; full 8-bit glyphs of ROM codes 30/31 (Spectrum ROM code bytes, printed',
+            '; by sub-stream 21)', 'T_FEXCC:']
     emit_bytes(out, list(FONT_EXC))
     out.append('T_FEXC:')
     for c in FONT_EXC:
@@ -814,8 +809,8 @@ def gen(tape=None):
     out += ['; small gauge needle table DA47B (dx, dy) x 6', 'T_A47B:']
     emit_bytes(out, img[0xA47B:0xA487])
     out += ['        .res $100 - (* - cs_start)',
-            '; $9900: ROM font chars 32-127, (byte >> 1) & $3F']
-    emit_bytes(out, [(b >> 1) & 0x3F for b in rom[0x3D00:0x4000]])
+            '; $9900..: the Oric character set, copied there by the ROM\'s HIRES',
+            '; command when the disk boots (the program file ends before it)']
     out += ['', '        .segment "RODATA"',
             '; custom font DAA2F: glyphs 11-22 only (00-10 are the dashboard pieces',
             '; and dial numerals of the precomputed picture)', 'T_AA2F = * - $11*8']

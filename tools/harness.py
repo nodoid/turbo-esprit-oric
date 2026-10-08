@@ -304,6 +304,12 @@ def main():
         blobs[lay['DASH_TRACK']] = open(base + '.dash', 'rb').read()
         zx = open(os.path.join(os.path.dirname(__file__), '..', 'data', 'zxram.bin'), 'rb').read()
         blobs[lay['CITY_TRACK']] = zx[0x686B - 0x5B00:0x6DB7 - 0x5B00]
+        blobs[lay['HID_TRACK']] = open(base + '.hid', 'rb').read()
+        # the Oric font that the ROM's HIRES command leaves at $9900
+        rom = os.environ.get('ORICROM')
+        if rom and os.path.exists(rom):
+            r = open(rom, 'rb').read()
+            m.ram[0x9900:0x9900 + 768] = r[0x3C78:0x3C78 + 768]
         dread = lay['DREAD']
     else:
         start, end, hdr = load_tap(args.tap, m.ram)

@@ -16,7 +16,7 @@ all: $(DSK)
 
 $(DSK): $(BUILD)/turbo.bin $(BUILD)/boot.bin tools/mkdsk.py src/disk.inc data/zxram.bin
 	TAP2DSK=$(TAP2DSK) python3 tools/mkdsk.py $@ $(BUILD)/turbo.bin $(BUILD)/boot.bin \
-		$(BUILD)/turbo.bin.ovl $(BUILD)/turbo.bin.menu $(BUILD)/turbo.bin.dash
+		$(BUILD)/turbo.bin.ovl $(BUILD)/turbo.bin.menu $(BUILD)/turbo.bin.dash $(BUILD)/turbo.bin.hid
 
 $(BUILD)/boot.bin: src/boot/boot.s src/disk.inc src/hw.inc | $(BUILD)
 	$(AS) -I src -o $(BUILD)/boot.o src/boot/boot.s

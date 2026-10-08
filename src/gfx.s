@@ -922,9 +922,9 @@ printc__c:     inc tp
         bpl printc__c
         rts
 
-; LA6B5 glyph A.  ROM font glyphs come from the HIRES charset at $9900
-; (6-bit copy, shifted back left) except the few that use pixel columns 0/7
-; (T_FEXC); custom font from T_AA2F.
+; LA6B5 glyph A.  Text uses the Oric character set (HIRES charset at $9900,
+; 6 pixels wide, drawn shifted left one pixel in the 8-pixel cell), except
+; codes 30/31 (T_FEXC); custom font from T_AA2F.
 gfx_glyph:
         sta gch
         lda ZV_A6D7             ; screen mode, y >= 176: text rows
@@ -942,7 +942,7 @@ gfx_glyph:
         bcc :+
         cmp #84
         bcc g_rom
-:       ldy #5
+:       ldy #1
 :       cmp T_FEXCC,y
         beq g_exc
         dey
