@@ -28,6 +28,7 @@ extract:
 	python3 tools/mkloadscr.py orig/TurboEsprit.tzx data/loadscr.bin
 	python3 tools/gen_objects.py orig/TurboEsprit.tzx data/objects_data.s
 	python3 tools/gen_snd.py
+	python3 tools/gen_render.py
 
 $(BUILD):
 	mkdir -p $(BUILD)
