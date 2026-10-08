@@ -51,8 +51,8 @@ def build():
 
 
 # rare branches inside routines (cheap-local labels, found in a listing)
-LOCAL = [('group', '@dhit'), ('group', '@ihit'), ('gdraw', '@pair'), ('gapsetup', '@left'),
-         ('overlay', '@mir'), ('overlay', '@p0'), ('overlay', '@clip')]
+LOCAL = [('gdraw', '@pair'), ('gapsetup', '@left'),
+         ('overlay', '@p1')]
 
 
 def local_addrs(sim):
@@ -75,7 +75,7 @@ def local_addrs(sim):
 
 
 COVER = ['explode', 'call_b3b3', 'group', 'colour', 'overlay', 'gapsetup', 'gapop', 'maska', 'maskam',
-         'maskb', 'maskbm', 'fetchn0', 'fetchn1', 'fetchm0', 'fetchm1', 'rchain', 'lchain', 'mnone']
+         'maskb', 'mbrun', 'fetchn0', 'fetchm0', 'rchain', 'lchain', 'mnone']
 
 
 def check_data(sim):

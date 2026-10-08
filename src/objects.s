@@ -44,11 +44,17 @@ base8:  .res 1                  ; 8 * (5-W)
 rows:   .res 1
 tmp:    .res 1
 tmp2:   .res 1
+persp:  .res 2                  ; perspective entry $78C2+12d
+lp:     .res 2                  ; 876F line pointer
+ap:     .res 2                  ; 876F colour pointer
+msk:    .res 1                  ; $FF when mirrored
+k1b:    .res 1
+t_e:    .res 1
+t_f:    .res 1
 
 ; z-register file used as scratch pointers inside S893C
 op      = zixl                  ; object record (then image) pointer
 img     = zixl
-persp   = ziyl                  ; perspective entry $78C2+12d
 src     = zl                    ; image source
 mp      = ze                    ; mask data pointer
 dst     = zc                    ; buffer row pointer
@@ -64,6 +70,8 @@ s_b:    .res 1
 s_v:    .res 1
 s_y:    .res 1
 s_lsave:.res 1
+col76:  .res 1
+mrow2:  .res 6
 xlo:    .res 1                  ; screen X (0x100 = view centre)
 xhi:    .res 1
 ybot:   .res 1
@@ -104,7 +112,8 @@ RKEEP:  .byte $00,$01,$03,$07,$0F,$1F,$3F,$7F     ; D8807
 ; lane probes of 881F in scan order: (lag, lateral) and map offset
 lagtab: .byte 0, 0, 3, 3, 6, 6, 9, 9
 lattab: .byte $1C,$9C,$14,$94,$0C,$8C,$04,$84
-proboff:.word $0000,$0700,$00FD,$05FD,$01FA,$04FA,$02F7,$03F7
+problo: .byte <$0000,<$0700,<$00FD,<$05FD,<$01FA,<$04FA,<$02F7,<$03F7
+probhi: .byte >$0000,>$0700,>$00FD,>$05FD,>$01FA,>$04FA,>$02F7,>$03F7
 ; D8F12: traffic-light sequence (duration, state), $80 = restart
 T_8F12: .byte $06,$88,$08,$89,$28,$82,$08,$8B,$08,$88,$08,$98,$28,$28,$08,$B8,$80
 
@@ -117,137 +126,124 @@ T_8F12: .byte $06,$88,$08,$89,$28,$82,$08,$8B,$08,$88,$08,$98,$28,$28,$08,$B8,$8
 ; S876F: fill the buildings down from their roof lines and colour the top 4
 ; character rows (0x08 sky, 0x0F roof cell, 0x38 inside).  Y = column.
 ; ===========================================================================
-; LN = buffer address of line l of cell k (column 0), AT = colour cell k
-LN0 = $6422
-AT0 = $7042
-
-; one fill line: A = c in, c|v out; byte = c AND NOT v
-.macro FLINE k, l
-        ora LN0 + 256*k + 32*l,y
-        tax
-        eor LN0 + 256*k + 32*l,y
-        sta LN0 + 256*k + 32*l,y
-        txa
-.endmacro
-
-; fill cell k from line 0 with A = c (L87C1)
-.macro FCELL k
-        ora LN0 + 256*k,y
-        cmp #$FF
-        bne :+
-        jmp .ident(.sprintf("t38_%d", k))
-:       tax
-        eor LN0 + 256*k,y
-        sta LN0 + 256*k,y
-        txa
-        FLINE k, 1
-        FLINE k, 2
-        FLINE k, 3
-        FLINE k, 4
-        FLINE k, 5
-        FLINE k, 6
-        FLINE k, 7
-        lda #$0F
-        sta AT0 + 32*k,y
-.if k < 3
-        cpx #$FF
-        bne :+
-        jmp .ident(.sprintf("t38_%d", k+1))
-:       txa
-.else
-        jmp next76
-.endif
-.endmacro
-
-; sky cell k: lines 0..6 empty?  (L879B)
-.macro SCELL k
-        .local sf
-        lda LN0 + 256*k,y
-        bne sf
-        lda LN0 + 256*k + 32,y
-        bne sf
-        lda LN0 + 256*k + 64,y
-        bne sf
-        lda LN0 + 256*k + 96,y
-        bne sf
-        lda LN0 + 256*k + 128,y
-        bne sf
-        lda LN0 + 256*k + 160,y
-        bne sf
-        lda LN0 + 256*k + 192,y
-        bne sf
-        lda #$08
-        sta AT0 + 32*k,y
-.if k < 3
-        lda LN0 + 256*k + 224,y
-        beq .ident(.sprintf("sky_%d", k+1))
-        cmp #$FF
-        bne :+
-        jmp .ident(.sprintf("t38_%d", k+1))
-:       jmp .ident(.sprintf("fill_%d", k+1))
-.else
-        jmp next76
-.endif
-sf:     lda #0
-        jmp .ident(.sprintf("fill_%d", k))
-.endmacro
-
+; Per column: lp -> line 0 of the current cell ($6422+col+256k, lines at
+; Y = 32*l), ap -> its colour cell ($7042+col+32k, never crosses a page).
         ZPROC $876F
-        ldy #0
-col76:  lda $6402,y
-        beq sky_0
+        lda #$70
+        sta ap+1
+        ldx #0
+c76:    stx col76
+        txa
+        clc
+        adc #$22
+        sta lp
+        adc #$20                ; $42+col
+        sta ap
+        lda #$64
+        sta lp+1
+        lda $6402,x
+        beq sky76
         cmp #$FF
+        bne fill76
+        lda #0                  ; INC (HL) side effect
+        sta $6402,x
+        jmp t38                 ; all 4 cells 0x38
+sky76:                          ; lines 0..6 of the cell empty?
+        .repeat 7, l
+        ldy #32*l
+        lda (lp),y
+        bne sf76
+        .endrep
+        ldy #0
+        lda #$08
+        sta (ap),y
+        ldy #224                ; line 7
+        lda (lp),y
+        bne :+
+        inc lp+1                ; next cell
+        lda ap
+        clc
+        adc #32
+        sta ap
+        lda lp+1
+        cmp #$68
+        bne sky76
+        beq done76
+:       cmp #$FF
+        beq t38n
+        jsr next76
+        bne fill76
+        beq done76
+sf76:   lda #0
+fill76: ldy #0                  ; L87C1, A = c
+        ora (lp),y
+        cmp #$FF
+        beq t38
+        tax
+        eor (lp),y
+        sta (lp),y
+        txa
+        .repeat 7, l
+        ldy #32*(l+1)
+        ora (lp),y
+        tax
+        eor (lp),y
+        sta (lp),y
+        txa
+        .endrep
+        ldy #0
+        lda #$0F
+        sta (ap),y
+        txa
+        cmp #$FF
+        beq t38n
+        jsr next76
+        beq done76
+        jmp fill76
+done76: ldx col76
+        inx
+        cpx #28
         beq :+
-        jmp fill_0
-:       lda #0
-        sta $6402,y
-        jmp t38_0
-sky_0:  SCELL 0
-sky_1:  SCELL 1
-sky_2:  SCELL 2
-sky_3:  SCELL 3
-fill_0: FCELL 0
-fill_1: FCELL 1
-fill_2: FCELL 2
-fill_3: FCELL 3
-t38_0:  lda #$38
-        sta AT0,y
-        bne t38x1
-t38_1:  lda #$38
-t38x1:  sta AT0+32,y
-t38x2:  sta AT0+64,y
-t38x3:  sta AT0+96,y
-next76: iny
-        cpy #28
-        beq :+
-        jmp col76
+        jmp c76
 :       rts
-t38_2:  lda #$38
-        bne t38x2
-t38_3:  lda #$38
-        bne t38x3
+t38n:   jsr next76
+        beq done76
+t38:    ldy #0                  ; this and the remaining cells = 0x38
+:       lda #$38
+        sta (ap),y
+        lda ap
+        clc
+        adc #32
+        sta ap
+        inc lp+1
+        lda lp+1
+        cmp #$68
+        bcc :-
+        bcs done76
+; next cell; A preserved, Z set when the column is done
+next76: inc lp+1
+        tax
+        lda ap
+        clc
+        adc #32
+        sta ap
+        txa
+        ldy lp+1
+        cpy #$68
+        rts
 
 ; ===========================================================================
 ; S881F: scan the object map far to near and draw every object.
 ; ===========================================================================
-PROBE_SIZE = 5
         ZPROC $881F
         ldx #7
-@patch: txa
-        asl
-        tay
-        lda proboff,y
-        sta tmp
-        lda proboff+1,y
-        sta tmp2
-        lda ptab,x
-        tay
+@patch: ldy ptab,x
         clc
         lda $7502
-        adc tmp
+        adc problo,x
         sta probes+1,y
         lda $7503
-        adc tmp2
+        adc probhi,x
         sta probes+2,y
         dex
         bpl @patch
@@ -255,53 +251,20 @@ PROBE_SIZE = 5
         sta s_C
         ldx #0
 probes:
-p0:     lda $FFFF,x
-        bne h0
-p1:     lda $FFFF,x
-        bne h1
-p2:     lda $FFFF,x
-        bne h2
-p3:     lda $FFFF,x
-        bne h3
-p4:     lda $FFFF,x
-        bne h4
-p5:     lda $FFFF,x
-        bne h5
-p6:     lda $FFFF,x
-        bne h6
-p7:     lda $FFFF,x
-        bne h7
-p8:     inx
+        .repeat 8, k
+        lda $FFFF,x             ; operand patched: map + probe offset
+        beq :+
+        ldy #k
+        jsr hit
+:
+        .endrep
+        inx
         dec s_C
-        bne p0
+        bne probes
         rts
-h0:     ldy #0
-        jsr hit
-        jmp p1
-h1:     ldy #1
-        jsr hit
-        jmp p2
-h2:     ldy #2
-        jsr hit
-        jmp p3
-h3:     ldy #3
-        jsr hit
-        jmp p4
-h4:     ldy #4
-        jsr hit
-        jmp p5
-h5:     ldy #5
-        jsr hit
-        jmp p6
-h6:     ldy #6
-        jsr hit
-        jmp p7
-h7:     ldy #7
-        jsr hit
-        jmp p8
 
         .segment "RODATA"
-ptab:   .byte 0, 5, 10, 15, 20, 25, 30, 35
+ptab:   .byte 0, 10, 20, 30, 40, 50, 60, 70
         .code
 
 ; A = map code, Y = probe number; X preserved
@@ -314,9 +277,8 @@ hit:    stx s_i
         txa
         bmi @hi
         and #$1F
+        bne @dr
         beq @out
-        jsr draw
-        jmp @out
 @hi:    cmp #$FD
         bcs @out
         cmp #$C0
@@ -331,7 +293,7 @@ hit:    stx s_i
 :       lda s_code
         and #7
         beq @out
-        jsr draw
+@dr:    jsr draw
 @out:   ldx s_i
         rts
 
@@ -347,66 +309,53 @@ group:  sta s_code
         ldx #0
         bcc :+
         inx
-:       sta tmp
-        stx tmp2
-        lda #1
-        sta v_flags
+:       stx tmp2
+        sta tmp
+        lda #$C8                ; INY: bytes p .. p+11, p = $FD60+12s
+        sta gstep
+        ldx #<ZV_FD60
+        ldy #>ZV_FD60
+        lda #0
+        sta t_y                 ; first index
         lda s_code
         and #$20
-        beq @inc
-        ; DEC HL: slot bytes p, p-1 .. p-11 (p = $FEBB+12s), b = Y+1
-        lda #<(ZV_FD60 + $FEBB - $FD60 - 11)
+        beq :+
+        lda #$88                ; DEY: bytes p .. p-11, p = $FEBB+12s
+        sta gstep
+        lda #11
+        sta t_y
+        ldx #<(ZV_FD60 + $FEBB - $FD60 - 11)
+        ldy #>(ZV_FD60 + $FEBB - $FD60 - 11)
+:       txa
         clc
         adc tmp
         sta gp
-        lda #>(ZV_FD60 + $FEBB - $FD60 - 11)
+        tya
         adc tmp2
         sta gp+1
-        ldy #11
-@dl:    lda (gp),y
-        bne @dhit
-@dn:    dey
-        bpl @dl
-        bmi @end
-@dhit:  sty s_y
+        lda #1
+        sta v_flags
+        ldy t_y
+        lda #12
+        sta s_b
+gloop:  lda (gp),y
+        beq gstep
+        sty s_y
         tax
-        tya
+        lda s_b
         asl
         asl
         asl
+        adc #$F8                ; 8*(b-1)
         jsr gdraw
         ldy s_y
-        jmp @dn
-        ; INC HL: slot bytes p .. p+11 (p = $FD60+12s), b = 12-Y
-@inc:   lda #<ZV_FD60
-        clc
-        adc tmp
-        sta gp
-        lda #>ZV_FD60
-        adc tmp2
-        sta gp+1
-        ldy #0
-@il:    lda (gp),y
-        bne @ihit
-@in:    iny
-        cpy #12
-        bne @il
-@end:   lda #0
+gstep:  iny                     ; patched INY/DEY
+        dec s_b
+        bne gloop
+        lda #0
         sta v_flags
         ldx s_i
         rts
-@ihit:  sty s_y
-        tax
-        tya
-        eor #$FF
-        clc
-        adc #12                 ; 11-Y
-        asl
-        asl
-        asl
-        jsr gdraw
-        ldy s_y
-        jmp @in
 
 ; draw slot value X with lateral + A (restored afterwards)
 gdraw:  stx s_v
@@ -513,14 +462,15 @@ draw:   sta s_K
         lda (persp),y
         sta tmp2
         lda #0
-        .repeat 7
-        lsr tmp
+        ldx #7
+@mul:   lsr tmp
         bcc :+
         clc
         adc tmp2
 :       ror
         ror t_y
-        .endrep
+        dex
+        bne @mul
         cmp #$12                ; A = prod>>7: prod >= $900 -> off >= $90
         bcc :+
         rts
@@ -580,13 +530,14 @@ draw:   sta s_K
         rol tmp
         clc
         adc #<T_C581
-        sta src
+        sta img
         lda tmp
         adc #>T_C581
-        sta src+1
+        sta img+1
         ldy #5
         lda (persp),y
         tax
+        ldy #0
         jsr sizesum
         ldy #0
         lda (img),y
@@ -603,16 +554,10 @@ draw:   sta s_K
         bit v_side
         bmi :+
         eor #3
-        jmp :++
+        bpl :++
 :       ora #4
 :       tax
-        lda img
-        clc
-        adc #1
-        sta src
-        lda img+1
-        adc #0
-        sta src+1
+        ldy #1
         jsr sizesum
 @nocont:
         ldy #0                  ; header
@@ -762,26 +707,27 @@ draw:   sta s_K
         jsr colour
 :       jmp render
 
-; sizesum (S8D35): img = word(src) + sum of the X bytes after it
+; sizesum (S8D35): img = word(img+Y) + sum of the X bytes after it
 sizesum:
-        ldy #0
-        lda (src),y
-        sta img
+        lda (img),y
+        sta tmp
         iny
-        lda (src),y
-        sta img+1
-        txa
+        lda (img),y
+        sta tmp2
+        lda tmp
+        cpx #0
         beq @done
-        lda img
 @l:     iny
         clc
-        adc (src),y
+        adc (img),y
         bcc :+
-        inc img+1
+        inc tmp2
 :       dex
         bne @l
-        sta img
-@done:  rts
+@done:  sta img
+        lda tmp2
+        sta img+1
+        rts
 
 ; exploding object (89BE): colour 3A, noise, advance frame, maybe remove
 explode:
@@ -805,19 +751,11 @@ explode:
         lda (op),y
         and #$7F
         sta (op),y
-        lda persp
-        pha
-        lda persp+1
-        pha
         lda op
         sta ziyl
         lda op+1
         sta ziyh
         jsr call_b3b3
-        pla
-        sta persp+1
-        pla
-        sta persp
 :       lda tmp2                ; spr = $24 + (c >> 6)
         rol
         rol
@@ -829,32 +767,19 @@ explode:
         rts
 
 ; S8EAB: B3B3(HL' = obj[6..7], C = obj[1], IY = record); HL BC DE preserved
-        ZPROC $8EAB
-        lda zl
+        ZPROC $8EAB             ; (zc zb ze zd zl zh are consecutive, zx.s)
+        ldx #5
+:       lda zc,x
         pha
-        lda zh
-        pha
-        lda zc
-        pha
-        lda zb
-        pha
-        lda ze
-        pha
-        lda zd
-        pha
+        dex
+        bpl :-
         jsr call_b3b3
-        pla
-        sta zd
-        pla
-        sta ze
-        pla
-        sta zb
-        pla
-        sta zc
-        pla
-        sta zh
-        pla
-        sta zl
+        ldx #0
+:       pla
+        sta zc,x
+        inx
+        cpx #6
+        bne :-
         rts
 call_b3b3:
         ldy #6
@@ -935,22 +860,21 @@ colour:
         sta rows
         lda tmp                 ; ptr = $7030 + (c&$78)*4 + col
         and #$78
-        ldx #0
-        stx tmp2
         asl
-        rol tmp2
         asl
-        rol tmp2
-        clc
-        adc v_col
+        ldx #>$7030
         bcc :+
-        inc tmp2
+        inx
+        clc
+:       adc v_col
+        bcc :+
+        inx
         clc
 :       adc #<$7030
-        sta src
-        lda tmp2
-        adc #>$7030
-        sta src+1
+        bcc :+
+        inx
+:       sta src
+        stx src+1
         ldx v_W
         inx                     ; cols = W+1
         lda v_flags
@@ -994,24 +918,20 @@ colour:
 ; render: image, mask, overlay, shift, gap clip, blit (8B02-8C86)
 ; ===========================================================================
 render:
-        lda img                 ; src = img+3 + W*clip
+        lda #3                  ; src = img+3 + W*clip (< 256)
+        ldx v_clip
+        beq @noclip
+:       clc
+        adc v_W
+        dex
+        bne :-
+@noclip:
         clc
-        adc #3
+        adc img
         sta src
         lda img+1
         adc #0
         sta src+1
-        ldx v_clip
-        beq @noclip
-        lda src
-:       clc
-        adc v_W
-        bcc :+
-        inc src+1
-:       dex
-        bne :--
-        sta src
-@noclip:
         lda #0                  ; mask data = src + W*H
         ldx v_W
 :       clc
@@ -1032,85 +952,64 @@ render:
         asl
         asl
         sta base8
+        adc #<mbset             ; mask row builders, entered at 5-W
+        sta vset
+        lda #>mbset
+        adc #0
+        sta vset+1
         ldx #0
         stx mi
+        bit v_hdr               ; msk = $FF when mirrored
+        bpl :+
+        dex
+:       stx msk
+        lda v_shift             ; mask origin: 8*(5-W)+x or 40+x
+        clc
+        bit msk
+        bmi :+
+        adc base8
+        jmp :++
+:       adc #40
+:       sta k1
+        sec
+        sbc msk                 ; k1b = k1 (+1 when mirrored)
+        sta k1b
         ; --- mask mode
         lda v_oflags
         and #2
         beq :+
         lda #<mnone
         ldx #>mnone
-        jmp @mset
+        bne @mset
 :       lda v_hdr
         and #$10
         bne @fmtb
         lda v_clip              ; format A: skip clip bytes
         sta mi
-        lda base8               ; row builder entry
-        clc
-        adc #<mbset
-        sta ma_j+1
-        sta mam_j+1
-        lda #>mbset
-        adc #0
-        sta ma_j+2
-        sta mam_j+2
         lda #<maska
         ldx #>maska
-        bit v_hdr
+        bit msk
         bpl @mset
         lda #<maskam
         ldx #>maskam
-        jmp @mset
+        bne @mset
 @fmtb:  ldx v_clip              ; format B: skip clip rows
-        beq @fb2
+        beq :+
         ldy #0
-:       iny
-        lda (mp),y
-        iny
-        asl
-        bcs :-
-        dex
-        bne :-
+        jsr skipb
         sty mi
-@fb2:   lda base8
-        clc
-        adc #<mbset
-        sta mb_s+1
-        sta mbm_s+1
-        lda #>mbset
-        adc #0
-        sta mb_s+2
-        sta mbm_s+2
-        lda tmp2                ; mband + 10*base
-        asl
-        adc base8
-        adc #<mband
-        sta mb_a+1
-        sta mbm_a+1
-        lda #>mband
-        adc #0
-        sta mb_a+2
-        sta mbm_a+2
-        lda #<maskb
+:       lda #<maskb
         ldx #>maskb
-        bit v_hdr
-        bpl @mset
-        lda #<maskbm
-        ldx #>maskbm
 @mset:  sta mj+1
         stx mj+2
-        ; --- mask origin
+        ; --- image fetch: variant = 2*mirrored + (shift >= 4)
         lda v_shift
-        bit v_hdr
-        bmi :+
-        clc
-        adc base8
-        bcc :++                 ; always
-:       clc
-        adc #40
-:       sta k1
-        ; --- image fetch: o = shift>=4
+        cmp #4
+        lda #0
+        rol
+        sta tmp
+        ldx v_W
+        ldy #0
         lda v_hdr
         and #$20
         beq @noov
@@ -1120,112 +1019,64 @@ render:
         lda $75F8
         and #2
         beq @noov
-        jsr overlay             ; builds $71D0, src -> buffer
-        ldx v_W
+        lda msk                 ; light overlay: unshifted rows into $71D0
+        and #2
+        jsr setfetch
+        jsr overlay
+        ldx v_W                 ; then draw from there: plain, stride W+1
         inx
-        jmp @fnm
-@noov:  ldx v_W
-        bit v_hdr
-        bpl @fnm
-        stx stride+1            ; mirrored fetch: Y starts at W-1
-        dex
-        stx sy
-        lda v_shift
-        cmp #4
-        lda tmp2
-        bcs :+
-        tay
-        lda mul9,y
-        adc #<fetchm0
-        ldx #>fetchm0
-        bcc @fset
-        inx
-        bne @fset
-:       tay
-        lda mul9,y
-        clc
-        adc #<fetchm1
-        ldx #>fetchm1
-        bcc @fset
-        inx
-        bne @fset
-@fnm:   stx stride+1            ; plain fetch (X = stride)
         ldy #0
-        sty sy
-        lda v_shift
-        cmp #4
-        lda tmp2
-        bcs :+
+        lda tmp
+        jmp @fs
+@noov:  bit msk
+        bpl :+
+        dex                     ; mirrored: Y starts at W-1
+        txa
         tay
-        lda mul5,y
-        adc #<fetchn0
-        ldx #>fetchn0
-        bcc @fset
         inx
-        bne @fset
-:       tay
-        lda mul5,y
-        clc
-        adc #<fetchn1
-        ldx #>fetchn1
-        bcc @fset
-        inx
-@fset:  sta fj+1
-        stx fj+2
-        ; --- shift: one call per row into repeated chains.  irow bytes
-        ; left of the row are 0 and stay 0 (only zeros are shifted into
-        ; them), so whole chain copies can run over them.
-        lda #0
-        ldx #5
-:       sta irow,x
-        dex
-        bpl :-
+        lda tmp
+        ora #2
+        bne @fs
+:       lda tmp
+@fs:    stx stride+1
+        sty sy
+        jsr setfetch
+        ; --- shift: right by 1..3 (spare 0 at irow+5) or left by 8-x
+        ; into the byte before the row (0 at irow+5-W)
         lda #<(irow+5)
         sta zst+1
-        lda #$20                ; JSR
-        sta sj
         lda v_shift
-        beq @sh0
+        sta nb+1
+        beq @shd
         cmp #4
         bcs @shl
-        eor #3                  ; right by s=1..3: copy 3-s, at base
-        tax
-        lda mul12,x
-        clc
-        adc tmp2
-        adc tmp2
+        lda tmp2
+        asl
         adc #<rchain
         ldx #>rchain
         bcc :+
         inx
 :       sta sj+1
         stx sj+2
-        jmp @shd
-@sh0:   lda #$2C                ; no shift: BIT abs
-        sta sj
         bne @shd
-@shl:   sec                     ; left by 8-s: copy s-4
-        sbc #4
-        tax
-        lda mul12,x
-        clc
-        adc #<lchain
-        ldx #>lchain
-        bcc :+
-        inx
-:       sta sj+1
-        stx sj+2
+@shl:   eor #7
+        adc #0                  ; C=1: 8-shift
+        sta nb+1
+        lda #<lchain
+        sta sj+1
+        lda #>lchain
+        sta sj+2
         lda tmp2
         clc
         adc #<irow
         sta zst+1
-        ldx v_W                 ; RTS after position base in the last copy
+        ldx v_W                 ; RTS after position base
         lda lpos,x
         tax
-        lda lchain+36,x
+        lda lchain,x
         sta lsave
         lda #$60
-        sta lchain+36,x
+        sta lchain,x
 @shd:   ; --- blit entry
         ldy tmp2
         lda mul9,y
@@ -1247,12 +1098,17 @@ render:
         lda v_H
         sta rows
         ; ------------------------------------------------- row loop
-rowlp:  lda #0
+rowlp:  ldy sy
+        jsr jfetch              ; fetch
+        lda #0
 zst:    sta irow+5              ; spare byte (zp operand patched)
-        ldy sy
-fj:     jsr $FFFF               ; fetch
-        clc
-sj:     jsr $FFFF               ; shift chains (or BIT)
+nb:     ldx #0
+        beq nosh
+shlp:   clc
+sj:     jsr $FFFF               ; shift chain
+        dex
+        bne shlp
+nosh:
 mj:     jsr $FFFF               ; mask row
 gj:     jsr gapop               ; (or BIT)
         ldy #0
@@ -1276,14 +1132,15 @@ stride: adc #0
         lda lpos,x
         tax
         lda lsave
-        sta lchain+36,x
+        sta lchain,x
 :       rts
 
         .segment "RODATA"
-mul5:   .byte 0, 5, 10, 15, 20, 25
-mul9:   .byte 0, 9, 18, 27, 36, 45
-mul12:  .byte 0, 12, 24, 36
+mul5:   .byte 0, 5, 10, 15, 20, 25, 30
+mul9:   .byte 0, 9, 18, 27, 36, 45, 54
 lpos:   .byte 2, 4, 6, 8, 10, 12        ; lchain offset after position 5-W
+flo:    .byte <fetchn0, <fetchm0
+fhi:    .byte >fetchn0, >fetchm0
 ; mask row tables: byte j of a row with run [lo,hi) =
 ;   LT0[lo-8j] (bits left of lo kept) | RT0[hi-8j] (bits from hi on kept)
 LTT:    .repeat 89, i
@@ -1308,54 +1165,72 @@ RTT:    .repeat 89, i
 RT0 = RTT + 40
         .code
 
+; setfetch: A = fetch variant (0/1 plain o=0/1, 2/3 mirrored) -> fj, vfetch
+setfetch:
+        tay
+        lsr                     ; X = 0 plain, 1 mirrored
+        tax
+        tya
+        and #1
+        clc
+        adc tmp2                ; entry = position 5-W+o
+        tay
+        lda mul5,y
+        cpx #1
+        bcc :+
+        lda mul9,y
+        clc
+:       adc flo,x
+        sta vfetch
+        lda fhi,x
+        adc #0
+        sta vfetch+1
+        rts
+jfetch: jmp $FFFF               ; patched jumps (no JMP (ind) page bug)
+jset:   jmp $FFFF
+vfetch = jfetch+1
+vset   = jset+1
+
+
+; skipb: skip X format-B mask rows from offset Y (Y = offset after)
+skipb:  iny
+        lda (mp),y
+        iny
+        asl
+        bcs skipb
+        dex
+        bne skipb
+        rts
+
 ; ---- row fetch routines (Y = row offset, +W-1 when mirrored)
+; Entered at position 5-W+o, they always run to position 5; with o = 0 the
+; last byte read is outside the row and is overwritten by the spare 0.
 fetchn0:
-        .repeat 5, P
+        .repeat 6, P
         lda (src),y
         sta irow+P
-        iny
-        .endrep
-        rts
-fetchn1:
-        .repeat 5, P
-        lda (src),y
-        sta irow+P+1
         iny
         .endrep
         rts
 fetchm0:
-        .repeat 5, P
+        .repeat 6, P
         lda (src),y
         tax
         lda $5B00,x
         sta irow+P
-        dey
-        .endrep
-        rts
-fetchm1:
-        .repeat 5, P
-        lda (src),y
-        tax
-        lda $5B00,x
-        sta irow+P+1
         dey
         .endrep
         rts
 
 ; ---- shift chains (carry clear on entry)
-rchain:                         ; 3 copies: enter copy 3-s at 2*base
-        .repeat 3
+rchain:                         ; entered at 2*(5-W)
         .repeat 6, P
         ror irow+P
         .endrep
-        .endrep
         rts
-lchain:                         ; 4 copies: enter copy s-4 (8-s copies run)
-        .repeat 4
-        asl irow+5
-        .repeat 5, P
-        rol irow+4-P
-        .endrep
+lchain:                         ; RTS patched after position 5-W
+        .repeat 6, P
+        rol irow+5-P
         .endrep
         rts
 
@@ -1378,27 +1253,29 @@ mbset:
         sta mrow+j
         .endrep
         rts
-mband:                          ; second run of the row
-        .repeat 6, j
-        lda LT0 - 8*j,x
-        ora RT0 - 8*j,y
-        and mrow+j
-        sta mrow+j
-        .endrep
+mband:  stx t_lo                 ; further runs: AND a second row in
+        ldx #5
+:       lda mrow,x
+        sta mrow2,x
+        dex
+        bpl :-
+        ldx t_lo
+        jsr jset
+        ldx #5
+:       lda mrow,x
+        and mrow2,x
+        sta mrow,x
+        dex
+        bpl :-
         rts
 
-; ---- mask rows.  Bit positions: row byte j = mrow+5-W+j.
+; ---- mask rows.  Bit positions: row byte j = mrow+5-W+j.  (The data's
+; runs end inside W*8 pixels, so no clipping is needed.)
 ; exploding: no mask
-mnone:  lda #$FF
-        sta mrow
-        sta mrow+1
-        sta mrow+2
-        sta mrow+3
-        sta mrow+4
-        sta mrow+5
-        rts
+mnone:  ldx #0                  ; empty run: all $FF
+        ldy #0
+        jmp jset
 ; format A, plain: run = [k1 + (m&7), + m>>3)
-; (the data's runs end inside W*8 pixels, so no clipping is needed)
 maska:  ldy mi
         lda (mp),y
         inc mi
@@ -1415,7 +1292,7 @@ maska:  ldy mi
         clc
         adc t_lo
         tay
-ma_j:   jmp $FFFF
+        jmp jset
 ; format A, mirrored: run = [hi - len, hi), hi = k1 - (m&7)
 maskam: ldy mi
         lda (mp),y
@@ -1435,100 +1312,53 @@ maskam: ldy mi
         adc t_hi
         tax
         ldy t_hi
-mam_j:  jmp $FFFF
-; format B, plain: [x0][len|more][gap][len]...
+        jmp jset
+; format B: [x0][len|more][gap][len]...  Plain runs go right from k1+x0,
+; mirrored ones left from k1-x0 (msk = $FF negates the steps).
 maskb:  ldy mi
         lda (mp),y
+        eor msk
         clc
-        adc k1
-        sta t_lo
-        iny
-        lda (mp),y
-        sty mi
-        sta t_len
-        and #$7F
-        clc
-        adc t_lo
-        sta t_end
-        cmp #49
-        bcc :+
-        lda #48
-:       tay
-        ldx t_lo
-mb_s:   jsr $FFFF
+        adc k1b
+        jsr mbrun
+        jsr jset
 mbmore: bit t_len
         bpl mbdone
         ldy mi
         iny
-        lda (mp),y
-        clc
-        adc t_end
-        sta t_lo
-        iny
-        lda (mp),y
-        sty mi
-        sta t_len
-        and #$7F
-        clc
-        adc t_lo
-        sta t_end
-        cmp #49
-        bcc :+
-        lda #48
-:       tay
-        ldx t_lo
-mb_a:   jsr $FFFF
+        lda (mp),y              ; gap from the end of the run
+        jsr mbstep
+        jsr mbrun
+        jsr mband
         jmp mbmore
 mbdone: inc mi
         rts
-; format B, mirrored: runs go right to left
-maskbm: ldy mi
-        lda (mp),y
-        eor #$FF
-        sec
-        adc k1
-        sta t_hi
+; A = run start (plain) / end (mirrored); reads the length -> X = lo, Y = hi
+mbrun:  sta t_e
         iny
         lda (mp),y
         sty mi
         sta t_len
         and #$7F
-        eor #$FF
-        sec
-        adc t_hi
-        sta t_end
-        bcs :+
-        lda #0
-:       tax
-        ldy t_hi
-mbm_s:  jsr $FFFF
-mbmmore:
-        bit t_len
-        bpl mbmdone
-        ldy mi
-        iny
-        lda (mp),y
-        eor #$FF
-        sec
-        adc t_end
-        sta t_hi
-        iny
-        lda (mp),y
-        sty mi
-        sta t_len
-        and #$7F
-        eor #$FF
-        sec
-        adc t_hi
-        sta t_end
-        bcs :+
-        lda #0
-:       tax
-        ldy t_hi
-mbm_a:  jsr $FFFF
-        jmp mbmmore
-mbmdone:
-        inc mi
+        ldy t_e
+        sty t_f
+        jsr mbstep              ; t_f = far end of the run
+        sta t_f
+        bit msk
+        bmi :+
+        ldx t_e
+        ldy t_f
+        rts
+:       ldx t_f
+        ldy t_e
+        rts
+; A = t_f +- A
+mbstep: sta t_y
+        lda msk
+        asl
+        lda t_y
+        eor msk
+        adc t_f
         rts
 
 ; junction gap clip of one row (S8D46 on the built row)
@@ -1558,11 +1388,9 @@ gapsetup:
         sta v_flags
         bit v_side
         bpl @left
-        lda v_W                 ; right: column W+gap gets LK[D7509&7]
+        lda v_gap               ; right: column W+gap gets LK[D7509&7]
         clc
-        adc v_gap
-        clc
-        adc tmp2
+        adc #5                  ; (position base+W = 5)
         sta g_col
         tax
         inx
@@ -1598,74 +1426,57 @@ gapsetup:
         sta g_or
         rts
 
-; S8E48 path: build the unshifted image in $71D0 (rows of W+1), patch the
-; light overlay into it, then draw from there (plain fetch, stride W+1)
+; S8E48 path: build the unshifted image in $71D0 (rows of W+1) with the
+; normal row fetch (variant already set), patch the light overlay into it
 overlay:
         lda #<$71D0
         sta t_lo                ; t_lo/t_hi as a pointer into $71D0
         lda #>$71D0
         sta t_hi
+        ldy #0
+        bit msk
+        bpl :+
+        ldy v_W
+        dey
+:       sty sy
         lda v_H
         sta rows
-@row:   bit v_hdr
-        bmi @mir
+@row:   ldy sy
+        jsr jfetch
+        lda #0
+        sta irow+5
+        ldx tmp2
         ldy #0
-:       lda (src),y
+:       lda irow,x
         sta (t_lo),y
         iny
-        cpy v_W
+        inx
+        cpx #6
         bne :-
-        beq @z
-@mir:   ldy v_W
-        dey
-        ldx #0
-        stx t_y
-:       lda (src),y
-        tax
-        lda $5B00,x
-        sty t_bl
-        ldy t_y
-        sta (t_lo),y
-        inc t_y
-        ldy t_bl
-        dey
-        bpl :-
-        ldy v_W
-@z:     lda #0
-        sta (t_lo),y
-        iny
         tya
         clc
         adc t_lo
         sta t_lo
         bcc :+
         inc t_hi
-:       lda src
+:       lda sy
         clc
         adc v_W
-        sta src
-        bcc :+
-        inc src+1
-:       dec rows
+        sta sy
+        dec rows
         bne @row
-        ; find the end of the mask data (first row after clip at mp+mi)
+        ; end of the mask data (first row after clip at mp+mi)
+        ldy mi
         lda v_hdr
         and #$10
-        bne @fb
-        lda mi
+        bne :+
+        tya
         clc
         adc v_H
         tay
         jmp @fe
-@fb:    ldx v_H
-        ldy mi
-:       iny
-        lda (mp),y
-        iny
-        asl
-        bcs :-
-        dex
-        bne :-
+:       ldx v_H
+        jsr skipb
 @fe:    tya
         clc
         adc mp
@@ -1673,71 +1484,48 @@ overlay:
         lda mp+1
         adc #0
         sta src+1
-        ldy #0                  ; src = overlay block
+        ldy #0                  ; src = overlay block (Y = offset)
         bit v_hdr
         bpl :+
-        lda (src),y
-        jsr @adv
-:       lda #1
-        jsr @adv
+        lda (src),y             ; mirrored: skip to its block
+        tay
+:       iny
         lda v_oflags
         and #8
         beq :+
-        lda (src),y
-        jsr @adv
-:       lda #1
-        jsr @adv
+        tya                     ; second list
+        clc
+        adc (src),y
+        tay
+:       iny
         lda (src),y             ; n pairs (value, offset)
         sta rows
-        lda #1
-        jsr @adv
-        lda v_clip
-        bne @clip
-@p0:    ldy #1
-        lda (src),y
-        tax
-        dey
-        lda (src),y
-        sta $71D0,x
-        lda #2
-        jsr @adv
-        dec rows
-        bne @p0
-        beq @done
-@clip:  ldx v_W                 ; thr = clip*(W+1) & $FF
-        inx
+        ldx v_W                 ; thr = clip*(W+1) & $FF (0: no clip;
+        inx                     ; the data has no offset 0)
         lda #0
 :       clc
         adc v_clip
         dex
         bne :-
-        sta tmp
-@p1:    ldy #1
+        sta t_bl
+@p1:    iny                     ; value
+        iny                     ; offset
         lda (src),y
-        cmp tmp
+        cmp t_bl
         beq :+
         bcc :+
-        sec
-        sbc tmp
+        sbc t_bl
         tax
         dey
         lda (src),y
         sta $71D0,x
-:       lda #2
-        jsr @adv
-        dec rows
+        iny
+:       dec rows
         bne @p1
-@done:  lda #<$71D0
+        lda #<$71D0
         sta src
         lda #>$71D0
         sta src+1
-        rts
-@adv:   clc
-        adc src
-        sta src
-        bcc :+
-        inc src+1
-:       ldy #0
         rts
 
 ; ===========================================================================
@@ -1753,15 +1541,12 @@ overlay:
         ldx #0
 :       lda T_8F12,x
         sta $75F9
-        lda T_8F12+1,x
-        sta $7605
-        txa
+        txa                     ; (the high byte stays $8F)
         clc
         adc #<($8F12+2)
         sta v_8F10
-        lda #>$8F12
-        sta v_8F10+1
-        lda $7605
+        lda T_8F12+1,x
+        sta $7605
 L8EF9:  tax
         lda $75F0
         lsr
@@ -1788,31 +1573,24 @@ L8EF9:  tax
         sta zl
         lda T_BF9C+1,x
         sta zh
+        ldx #0
         ldy #0
+@seg:   lda lmp_lo,x            ; destination - source offset
+        sta ze
+        lda lmp_hi,x
+        sta zd
 :       lda (zl),y
-        sta ZV_BDE2,y
+        sta (ze),y
         iny
-        cpy #3
+        tya
+        cmp lmp_end,x
         bne :-
-        ldx #0
-:       lda (zl),y
-        sta ZV_BE05,x
-        iny
         inx
-        cpx #5
-        bne :-
-        ldx #0
-:       lda (zl),y
-        sta ZV_BE45,x
-        iny
-        inx
-        cpx #15
-        bne :-
-        ldx #0
-:       lda (zl),y
-        sta ZV_BEA3,x
-        iny
-        inx
-        cpx #15
-        bne :-
+        cpx #4
+        bne @seg
         rts
+        .segment "RODATA"
+lmp_lo: .byte <(ZV_BDE2), <(ZV_BE05-3), <(ZV_BE45-8), <(ZV_BEA3-23)
+lmp_hi: .byte >(ZV_BDE2), >(ZV_BE05-3), >(ZV_BE45-8), >(ZV_BEA3-23)
+lmp_end:.byte 3, 8, 23, 38
+        .code
