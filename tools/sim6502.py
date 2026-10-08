@@ -44,6 +44,9 @@ class Sim:
                 self.zvars[zxa] = (v, size)
         self.mpu = MPU(memory=self.mem, pc=0)
         self.cycles = 0
+        self.a = 0
+        self.carry = 0
+        self.zero = 0
 
     def addr(self, x):
         return self.sym[x] if isinstance(x, str) else x

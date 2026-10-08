@@ -6,11 +6,15 @@ TAP     = $(BUILD)/turbo.tap
 ORIC    = $(HOME)/Downloads/Oric v1.8.3/Oric.app
 
 SRCS    = $(wildcard src/*.s)
-OBJS    = $(patsubst src/%.s,$(BUILD)/%.o,$(SRCS))
+DSRCS   = $(wildcard data/*.s)
+OBJS    = $(patsubst src/%.s,$(BUILD)/%.o,$(SRCS)) $(patsubst data/%.s,$(BUILD)/data_%.o,$(DSRCS))
 
 all: $(TAP)
 
 $(BUILD)/%.o: src/%.s $(wildcard src/*.inc) | $(BUILD)
+	$(AS) -g -I src -I data --bin-include-dir data -o $@ $<
+
+$(BUILD)/data_%.o: data/%.s | $(BUILD)
 	$(AS) -g -I src -I data --bin-include-dir data -o $@ $<
 
 $(BUILD)/turbo.bin: $(OBJS) src/turbo.cfg
