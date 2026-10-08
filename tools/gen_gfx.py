@@ -498,7 +498,14 @@ def encode_line(target, need=None, force=None, attr0=True, colours=None):
     back = []
 
     def err(shown, g):
-        return sum(1 for a, b in zip(shown, g) if b is not None and a != b)
+        # perceptual weights: colour where the picture is black (bars and
+        # blocks) is worst, then wrong lamp colours, then lost line pixels
+        t = 0
+        for a, b in zip(shown, g):
+            if b is None or a == b:
+                continue
+            t += 4 if b == 0 else 3 if b in (1, 2, 5) else 1
+        return t
     for c in range(40):
         g = target[c * 6:c * 6 + 6]
         ncost, nback = {}, {}
@@ -506,6 +513,13 @@ def encode_line(target, need=None, force=None, attr0=True, colours=None):
             cands = []
             if c in force:
                 cands.append(force[c])
+            elif c in need and need[c][0] == 'xor':
+                bits = need[c][1]        # black pixels; the rest cyan
+                for inv, ii, pp in ((0, ink, paper), (0x80, ink ^ 7, paper ^ 7)):
+                    if (ii, pp) == (0, 6):
+                        cands.append(0x40 | inv | bits)
+                    elif (ii, pp) == (6, 0):
+                        cands.append(0x40 | inv | (bits ^ 0x3F))
             elif c in need:
                 nk, npp, bits = need[c]
                 if (ink, paper) == (nk, npp):
@@ -543,13 +557,14 @@ def encode_line(target, need=None, force=None, attr0=True, colours=None):
         if not cost:
             raise ValueError('no encoding (column %d)' % c)
     st = min(cost, key=cost.get)
-    best = cost[st]
     out = []
     for c in range(39, -1, -1):
         prev, byte = back[c][st]
         out.append(byte)
         st = prev
-    return out[::-1], best >> 4
+    out = out[::-1]
+    shown = decode_line(out)
+    return out, sum(1 for a, b in zip(shown, target) if b is not None and a != b)
 
 
 def decode_line(row):
@@ -591,9 +606,11 @@ def build_dashboard(img):
     # dynamic pixels: wheel (both ways, draw+undraw), all needle positions,
     # gauge glyph redraw
     dyn = {}
+    xor_only = {}            # cells drawn only by the XOR needles (A36F)
+    cur = [dyn]
 
     def mark(x, y):
-        dyn.setdefault(y, set()).add((x + 6) // 6)
+        cur[0].setdefault(y, set()).add((x + 6) // 6)
 
     def diffmark(a, b):
         for i in range(0x4000, 0x5800):
@@ -618,6 +635,7 @@ def build_dashboard(img):
         m2 = TrackMem(mm)
         run_inline(m2, 0xA046 if d & 2 else 0xA06C)
         writemark(m2)
+    cur[0] = xor_only
     for a in range(18):
         mm = bytearray(m)
         sa399(mm, a, 0x64, 0xA23F)
@@ -625,6 +643,7 @@ def build_dashboard(img):
         m2 = TrackMem(mm)
         run_inline(m2, 0xA373)
         writemark(m2)
+    cur[0] = dyn
     for a in range(12):
         mm = bytearray(m)
         sa457(mm, a, 0xAD, 0xA259)
@@ -635,6 +654,11 @@ def build_dashboard(img):
         m3 = TrackMem(m2)
         run_inline(m3, 0xA421)
         writemark(m3)
+    # cells only the XOR needles touch may use either polarity
+    for y, cs in xor_only.items():
+        for c in cs:
+            if c not in dyn.get(y, ()):
+                dyn.setdefault(y, set()).add(-1 - c)       # marked "either"
     return m, dyn, final_state
 
 
@@ -655,21 +679,115 @@ def target_line(m, y, lamp_off=()):
     return t
 
 
+def lamp_boxes(targets):
+    """Bounding boxes (y0, y1, x0, x1) of the red/magenta lamps."""
+    seen, boxes = set(), []
+    for y, t in targets.items():
+        for x, c in enumerate(t):
+            if c in (1, 5) and (x, y) not in seen:
+                stack, pts = [(x, y)], []
+                seen.add((x, y))
+                while stack:
+                    px, py = stack.pop()
+                    pts.append((px, py))
+                    for nx in range(px - 2, px + 3):        # (the glyph inside
+                        for ny in range(py - 2, py + 3):    #  splits the lamp)
+                            if (nx, ny) not in seen and ny in targets and 0 <= nx < 240 \
+                                    and targets[ny][nx] in (1, 5):
+                                seen.add((nx, ny))
+                                stack.append((nx, ny))
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                boxes.append((min(ys), max(ys), min(xs), max(xs)))
+    return boxes
+
+
+def shift_box(targets, box, dx):
+    """Copy of the target lines with the lamp in `box` moved dx pixels
+    (it sits on black; what it leaves behind becomes black)."""
+    y0, y1, x0, x1 = box
+    out = {}
+    for y in range(y0, y1 + 1):
+        t = list(targets[y])
+        src = targets[y]
+        for x in range(x0 - 1, x1 + 2):
+            t[x] = 0
+        for x in range(x0 - 1, x1 + 2):
+            if 0 <= x + dx < 240:
+                t[x + dx] = src[x]
+        out[y] = t
+    return out
+
+
 def encode_dashboard(m, dyn):
     rows = []
     errs = 0
+    targets = {y: target_line(m, y) for y in range(96, 176)}
+    # the red/magenta lamps sit on black: move each by up to 3 pixels to
+    # where its colour changes fall into whole 6-pixel cells (the Oric needs
+    # an attribute byte to change colour)
+    # lamps sharing lines on the same side are placed together
+    boxes = lamp_boxes(targets)
+    groups = []
+    for b in boxes:
+        for g in groups:
+            if any(b[0] <= o[1] and o[0] <= b[1] and (b[2] < 120) == (o[2] < 120) for o in g):
+                g.append(b)
+                break
+        else:
+            groups.append([b])
+    import itertools
+    for g in groups:
+        best = None
+        for dxs in itertools.product(range(-3, 4), repeat=len(g)):
+            cand = dict(targets)
+            for b, dx in zip(g, dxs):
+                cand.update(shift_box(cand, b, dx))
+            ys = range(min(b[0] for b in g), max(b[1] for b in g) + 1)
+            e = sum(encode_line(cand[y], colours=set(cand[y]) | {7 - v for v in cand[y]})[1]
+                    for y in ys)
+            if best is None or e < best[0]:
+                best = (e, cand)
+        targets = best[1]
     for y in range(96, 176):
-        t = target_line(m, y)
+        t = targets[y]
         need = {}
+        either = {-1 - c for c in dyn.get(y, ()) if c < 0}
+        # live cells within 3 columns of a lamp may use either polarity too:
+        # a lamp needs other colours, and there is no room for the two
+        # attribute bytes a polarity change would take (the steering-wheel
+        # rim drawn there while turning shows in reverse; the lamps stay)
+        lampcols = {(x + 6) // 6 for x in range(234) if t[x + 6] in (1, 2, 5)}
+        for c in [c for c in dyn.get(y, ()) if c >= 0]:
+            if any(abs(c - lc) <= 3 for lc in lampcols):
+                either.add(c)
         if y in dyn:
-            for c in sorted(dyn[y]):
+            for c in sorted(c for c in dyn[y] if c >= 0 and c not in either):
+                # live cell (needles / wheel / gauges draw here): a pixel
+                # byte whose ink and paper are those of the Spectrum
+                # attribute cell, so drawn pixels show in the ink colour
+                # (black on the cyan dials, cyan on the black rim area)
+                pairs = {}
+                for k in range(6):
+                    x = c * 6 + k - 6
+                    a = m[0x5800 + (y >> 3) * 32 + (x >> 3)]
+                    pr = (ZX2ORIC[a & 7], ZX2ORIC[(a >> 3) & 7])
+                    pairs[pr] = pairs.get(pr, 0) + 1
+                ink, paper = max(pairs, key=pairs.get)
+                assert {ink, paper} == {0, 6}, (c, y, ink, paper)
                 bits = 0
                 for k in range(6):
                     x = c * 6 + k - 6
-                    assert spec_colour(m, x, y) in (0, 6), (x, y)
-                    if spec_pixel(m, x, y):
+                    if spec_colour(m, x, y) == ink:
                         bits |= 0x20 >> k
-                need[c] = (0, 6, bits)
+                need[c] = (ink, paper, bits)
+            for c in either:
+                bits = 0
+                for k in range(6):
+                    x = c * 6 + k - 6
+                    if spec_colour(m, x, y) == 0:
+                        bits |= 0x20 >> k
+                need[c] = ('xor', bits)
         colours = set(v for v in t if v is not None)
         colours |= set(7 - v for v in colours)
         row, e = encode_line(t, need=need, colours=colours)

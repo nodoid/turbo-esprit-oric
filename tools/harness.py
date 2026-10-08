@@ -266,6 +266,7 @@ def main():
                     help='tap argument is build/turbo.bin: load it, the .ovl and the disk blobs '
                          '(as the boot stub would) and emulate the resident sector reader')
     ap.add_argument('--trace', type=int, default=0, help='print the last N PCs at the end')
+    ap.add_argument('--dumpram', help='write the 64K RAM here at the end')
     args = ap.parse_args()
 
     syms = {}
@@ -414,6 +415,8 @@ def main():
         tot = sum(agg.values())
         for nm, n in sorted(agg.items(), key=lambda x: -x[1])[:25]:
             print("%6.2f%% %s" % (100.0 * n / tot, nm))
+    if args.dumpram:
+        open(args.dumpram, 'wb').write(bytes(m.ram))
     if args.trace:
         print('last PCs:', ' '.join('%04X' % p for p in list(hist)[-args.trace:]))
     print("done: %d cycles, pc=%04X" % (m.cycles, mpu.pc))
