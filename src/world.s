@@ -71,52 +71,58 @@ ZV_9561 = ZV_9560 + 1
 ZV_9562 = ZV_9560 + 2
 ZV_9563 = ZV_9560 + 3
 
-; private (not hot) variables
-oldFC:  .res 1                  ; D976D: D75FC on entry to S958B
-rowT:   .res 1
-colT:   .res 1
-curT:   .res 1
-crossT: .res 1
-rel:    .res 1
-tofs:   .res 1                  ; T9816 offset for the heading
-segk:   .res 1                  ; segment counter (2, 1)
-stride: .res 1
-dcnt:   .res 1
-vcnt:   .res 1
-w_a:    .res 1                  ; S9999: value A
-w_neg:  .res 1                  ; S9999: BC negative
-mval:   .res 1                  ; D99B4
-w_row:  .res 1                  ; S99DD: base row E
-w_fl:   .res 1
-hjmp:   .res 2                  ; D9AE5/D9B14: transition handler
-w_fe:   .res 1                  ; D75FE on entry to S9AA8
-w_id:   .res 1                  ; E in S9AA8's loops (record id)
-w_par:  .res 1                  ; C in S9AA8's loops (0 traffic, 3 objects)
-w_cnt:  .res 1
-w_y:    .res 1                  ; D9DF2
-xb:     .res 1                  ; 9BD6: the exx'd register set
-xc:     .res 1
-xd:     .res 1
-xe:     .res 1
-xl:     .res 1
-xh:     .res 1
-xsgn:   .res 1
-xt:     .res 1
-xold:   .res 1
-xdist:  .res 1
+hjmp:   .res 3                  ; D9AE5/D9B14: transition handler
         ZVAR $FD60, $2A0        ; cross-street grids
 FDB = ZV_FD60 - $FD60           ; FDB + $FDxx = Oric address of Spectrum $FDxx
         ZVAR $9282, $153        ; current city block (copied in by the city select)
 
         .zeropage
+W:      .res 12                 ; the record being processed (copy of (ziy))
 tp:     .res 2                  ; general pointer
 w_b:    .res 1                  ; B in S8F3D (new +5)
 w_c:    .res 1                  ; C in S8F3D (old +1 flags)
 w_d:    .res 1                  ; D (kerb page)
 w_e:    .res 1                  ; E (row / random)
 w_step: .res 1
+w_x:    .res 1
 t0:     .res 1
 t1:     .res 1
+t2:     .res 1
+u0:     .res 1                  ; scratch (meaning per routine, see below)
+u1:     .res 1
+u2:     .res 1
+u3:     .res 1
+u4:     .res 1
+u5:     .res 1
+w_fe:   .res 1                  ; D75FE on entry to S9AA8
+w_id:   .res 1                  ; E in S9AA8's loops (record id)
+w_par:  .res 1                  ; C in S9AA8's loops (0 traffic, 3 objects)
+
+; private variables of the non-nesting routines share the scratch bytes
+oldFC   = u0                    ; S958B: D976D (D75FC on entry)
+rowT    = u1
+colT    = u2
+curT    = u3
+crossT  = u4
+rel     = u5
+tofs    = w_b                   ; T9816 offset for the heading
+segk    = w_c                   ; segment counter (2, 1)
+stride  = w_step
+dcnt    = w_x
+w_a     = u0                    ; S9999: value A
+w_neg   = u1                    ; S9999: BC negative
+mval    = u2                    ; D99B4
+w_row   = u3                    ; S99DD: base row E
+w_fl    = u4
+w_y     = u4                    ; D9D94: D9DF2
+xb      = w_b                   ; 9BD6: the exx'd register set
+xc      = w_c
+xd      = w_d
+xe      = w_e
+xl      = u0
+xh      = u1
+xt      = u2
+xdist   = u3
 
         .segment "RODATA"
         .include "world_tables.inc"
@@ -135,51 +141,96 @@ t1:     .res 1
 
 ; ===========================================================================
 ; S8F23: move the 3 traffic cars (records D770E, D771A, D7726, ids 1..3)
+; The record being processed is worked on in the zero-page copy W (win /
+; wout); the routines of other modules always see it written back.
 ; ===========================================================================
+; (S8F3D works on the record with X = its offset from REC = $770E.)
+REC = $770E
 ZPROC $8F23
-        lda #<$770E
-        sta ziyl
-        lda #>$770E
-        sta ziyh
+        ldx #0
         lda #1
 @l:     sta za2
+        stx w_x
         jsr Z_8F3D
-        lda ziyl
+        lda w_x
+        clc
+        adc #12
+        tax
+        lda za2
+        clc
+        adc #1
+        cmp #4
+        bne @l
+        rts
+
+nextiy: lda ziyl
         clc
         adc #12
         sta ziyl
         bcc :+
         inc ziyh
-:       ldx za2
-        inx
-        txa
-        cmp #4
-        bne @l
-        rts
+:       rts
 
-; SB905 / SB913 (other region, inlined): record <-> DB8F9 backup
-backup: ldy #11
-@l:     lda (ziy),y
-        sta ZV_B8F9,y
+; record (ziy) <-> W
+win:    ldy #11
+:       lda (ziy),y
+        sta W,y
         dey
-        bpl @l
+        bpl :-
         rts
-restore:
-        ldy #11
-@l:     lda ZV_B8F9,y
+wout:   ldy #11
+:       lda W,y
         sta (ziy),y
         dey
-        bpl @l
+        bpl :-
+        rts
+; SB905 / SB913 (other region, inlined): W <-> DB8F9 backup
+bkupx:  ldy #11                 ; REC,x -> DB8F9
+        txa
+        clc
+        adc #11
+        tax
+:       lda REC,x
+        sta ZV_B8F9,y
+        dex
+        dey
+        bpl :-
+        inx
+        rts
+rstrx:  ldy #11
+        txa
+        clc
+        adc #11
+        tax
+:       lda ZV_B8F9,y
+        sta REC,x
+        dex
+        dey
+        bpl :-
+        inx
+        rts
+bkup:   ldy #11
+:       lda W,y
+        sta ZV_B8F9,y
+        dey
+        bpl :-
+        rts
+rstr:   ldy #11
+:       lda ZV_B8F9,y
+        sta W,y
+        dey
+        bpl :-
         rts
 
-; SF53D (inlined): A = kerb page of the record's side
-f53d:   ldy #1
-        lda (ziy),y
+; SF53D (inlined): A = kerb page of the record's side (Y clobbered)
+f53dx:  lda REC+1,x
+        .byte $2C               ; (skip lda W+1)
+f53d:   lda W+1
+        ldy #0
         and #$20
-        beq @l
-        lda $75D7
-        rts
-@l:     lda $75D6
+        beq :+
+        iny
+:       lda $75D6,y
         rts
 
 ; SB9D2 (inlined): ze/zd = 12*A with the original's 8-bit overflow (A*4 and
@@ -197,40 +248,66 @@ mul12:  asl
         rts
 
 ; SB9DD (inlined): HL = cross-grid row A (col 0) of the record's arm
-b9dd:   jsr mul12
-        ldy #1
-        lda (ziy),y
+b9ddx:  pha
+        lda REC+1,x
+        jmp :+
+b9dd:   pha
+        lda W+1
+:       ldy #0
         and #$20
-        beq @l
-        lda #<$FEB0
+        beq :+
+        ldy #2
+:       pla
+        jsr mul12
+; HL = arm base Y (0 left $FD6B, 2 right $FEB0) + DE
+armb:   lda abase,y
+        sta zl
+        lda abase+1,y
+        sta zh
+hladde: lda zl                  ; HL += DE
         clc
         adc ze
         sta zl
-        lda #>$FEB0
+        lda zh
         adc zd
         sta zh
         rts
-@l:     lda #<$FD6B
-        clc
-        adc ze
+hlsube: lda zl                  ; HL -= DE
+        sec
+        sbc ze
         sta zl
-        lda #>$FD6B
-        adc zd
+        lda zh
+        sbc zd
         sta zh
         rts
+abase:  .word $FD6B, $FEB0
 
 ; SB9EE (inlined): move a main-grid record standing on an opening into the
 ; cross grid: +9 = +6-0x64, +8 = 0, ptr = HL = SB9DD(+9)
-b9ee:   LDF 6
+b9eex:  lda REC+6,x
         sec
         sbc #$64
-        STF 9
-        pha
+        sta REC+9,x
         lda #0
-        STF 8
-        pla
-        jsr b9dd
-        ; fall through
+        sta REC+8,x
+        lda REC+9,x
+        jsr b9ddx
+wstx:   lda zl                  ; (REC+6,REC+7),x = HL
+        sta REC+6,x
+        lda zh
+        sta REC+7,x
+        rts
+wldx:   lda REC+6,x
+        sta zl
+        lda REC+7,x
+        sta zh
+        rts
+wst:    lda zl                  ; (W+6,W+7) = HL
+        sta W+6
+        lda zh
+        sta W+7
+        rts
+
 ; S9274: (iy+6,iy+7) = HL
 ZPROC $9274
         ldy #6
@@ -255,20 +332,17 @@ ZPROC $927B
 ; S8F3D: one traffic car (record at ziy, id in za2)
 ; ===========================================================================
 ZPROC $8F3D
-        jsr backup
-        lda ZV_B8F9+1
-        bmi @act
+        jsr bkupx
+car:    lda REC+1,x
+        bmi :+
         jmp spawn
-@act:   sta w_c
-        lda ZV_B8F9+6
-        sta zl
-        lda ZV_B8F9+7
-        sta zh
-        lda ZV_B8F9+5
+:       sta w_c
+        jsr wldx
+        lda REC+5,x
         clc
         adc #4
         and #7
-        STF 5
+        sta REC+5,x
         sta w_b
         bit w_c
         bvc :+
@@ -277,129 +351,119 @@ ZPROC $8F3D
         bcc :+
         jmp sideways
 :       and #2                  ; (b>>1)&2 = b bit2
-        bne :+
-        rts
-:       jsr Z_9230
+        beq rts1
+        jsr Z_9230
         lda w_b
         and #2
-        beq f8f74
+        beq fwd
         inc zl                  ; towards the player
         lda $75F5
         clc
         adc #$C8
         cmp zl
         bne l8f7c
-off:    LDF 1                   ; left the grid
-        and #$7F
-        sta (ziy),y
-        rts
-f8f74:   dec zl
+off:    asl REC+1,x                 ; left the grid: bit 7 off
+        lsr REC+1,x
+rts1:   rts
+fwd:    dec zl
         beq off
-l8f7c:  jsr Z_9274
+l8f7c:  jsr wstx
         jsr Z_924B
         bcc nop8fa8
-        jsr b9ee                ; turned into an opening
-        LDF 1
+        jsr b9eex                ; turned into an opening
+        lda REC+1,x
         ora #$40
-        sta (ziy),y
-        jsr Z_927B
+        sta REC+1,x
         jsr Z_9205
-        beq :+
-        jmp reverse
-:       lda $75FD
-        bmi r8f3d
-        LDF 1
+        bne rev1
+        bit $75FD
+        bmi rts1
+        lda REC+1,x                 ; +5 = bit5 ? 1 : 3
         and #$20
-        beq :+
-        lda #1
-        STF 5
+        lsr
+        lsr
+        lsr
+        lsr
+        eor #3
+        sta REC+5,x
         rts
-:       lda #3
-        STF 5
-r8f3d:     rts
-nop8fa8:   jsr Z_9205
-        beq :+
-        jmp reverse
-:       lda zl
+rev1:   jmp reverse
+nop8fa8:
+        jsr Z_9205
+        bne rev1
+        lda zl
         sta w_e
         cmp #$2E
         bne :+
-        ldx #1                  ; entrance in the segment beyond (D75FC)
+        ldy #1                  ; entrance in the segment beyond (D75FC)
         jsr s9255
-        beq r8f3d
+        beq rts1
 :       lda $75F5
         clc
         adc #$92
         cmp w_e
         bne :+
-        ldx #0                  ; entrance in the current segment (D75FB)
+        ldy #0                  ; entrance in the current segment (D75FB)
         jsr s9255
-        beq r8f3d
+        beq rts1
 :       lda w_b
         and #2
-        beq f8fd7
+        beq :+
         lda $75F5               ; (never run)
         clc
         adc #$63
-        cmp w_e
-        bne r8f3d
-        lda $75F1
-        and #8
-        beq r8f3d
-        jmp l9266
-f8fd7:    lda #$64
-        cmp w_e
-        bne r8f3d
-        lda $75F1
-        and #2
-        beq r8f3d
-        jmp l9266
+        ldy #8
+        bne :++
+:       lda #$64
+        ldy #2
+:       cmp w_e
+        bne rts1
+        tya
+        and $75F1
+        beq rts1
+        bne l9266
 
 ; S9255 (A=row matched by the caller): entrance flags $75FB+X.  Z = taken.
-s9255:  lda $75FB,x
+s9255:  lda $75FB,y
         bmi no9255
         lsr
         bcc no9255
-        lda $75FB,x
+        lda $75FB,y
         ora #$80
-        sta $75FB,x
+        sta $75FB,y
         lda #$0F
-        STF 10
+        sta REC+10,x
 ; L9266: turn sideways: +5 = (old +1 bit5) ? 3 : 1, Z
 l9266:  lda w_c
         and #$20
-        beq :+
-        lda #3
-        bne :++
-:       lda #1
-:       STF 5
+        lsr
+        lsr
+        lsr
+        lsr
+        ora #1
+        sta REC+5,x
         lda #0
         rts
-no9255:    lda #1
+no9255: lda #1
         rts
 
 ; L9220: back out: restore the record, reverse the direction, re-occupy
 reverse:
-        jsr restore
-        LDF 5
-        eor #2
-        sta (ziy),y
-        lda ZV_B8F9+6
-        sta zl
-        lda ZV_B8F9+7
-        sta zh
+        jsr rstrx
+        lda #2
+        eor REC+5,x
+        sta REC+5,x
+        jsr wldx
         jmp Z_9205
 
 ; L8FE3: sideways in the main grid (direction 1/3)
 sideways:
-        LDF 10
+        lda REC+10,x
         beq @go
-        sec
-        sbc #1
-        sta (ziy),y
-        LDF 5
+        dec REC+10,x
+        lda REC+5,x
         and #3
-        sta (ziy),y
+        sta REC+5,x
         rts
 @go:    lda w_b                 ; (never run from here on)
         and #2
@@ -407,104 +471,91 @@ sideways:
         lda #$20
 :       eor w_c
         and #$20
-        bne @dec
-        ldy #0
-        lda (ziy),y
-        clc
-        adc #1
-        sta (ziy),y
+        bne sdec
+        inc REC+0,x
+        lda REC+0,x
         cmp #5
-        bne @r
+        bne rts2
         lda #$FD
         jsr s9045
         beq :+
         jmp reverse
-:       lda w_b
+:
+        lda w_b
         and #2
         bne @b1
         lda zh
         cmp #$60
-        bne @r
-        lda #3
-        STF 0
-        LDF 1
-        ora #$20
-        sta (ziy),y
-@r:     rts
+        bne rts2
+        lda #$20
+        ora REC+1,x
+        bne @st
 @b1:    lda zh
         cmp #$5F
-        bne @r
+        bne rts2
+        lda #$DF
+        and REC+1,x
+@st:    sta REC+1,x
         lda #3
-        STF 0
-        LDF 1
-        and #$DF
-        sta (ziy),y
-        rts
-@dec:   ldy #0
-        lda (ziy),y
-        sec
-        sbc #1
-        sta (ziy),y
+        sta REC+0,x
+rts2:   rts
+sdec:   dec REC+0,x
+        lda REC+0,x
         cmp #1
         beq kerb
         cmp #$FC
-        bne @r
+        bne rts2
         lda #4
         jsr s9045
-        beq @r
+        beq rts2
         jmp reverse
 
 ; S9045: one sideways cell step (A = new +0)
-s9045:  STF 0
+s9045:  sta REC+0,x
         jsr Z_9230
         lda w_b
         and #2
         bne :+
         inc zh
-        bne :++
+        inc zh
 :       dec zh
-:       lda zh
-        STF 7
+        lda zh
+        sta REC+7,x
         jsr Z_924B
         bcc :+
-        LDF 1
+        lda REC+1,x
         ora #$40
-        sta (ziy),y
-        jsr b9ee
+        sta REC+1,x
+        jsr b9eex
 :       jmp Z_9205
 
 ; L9064: reached the kerb
-kerb:   jsr f53d
-        ldy #7
-        cmp (ziy),y
-        bne @r
-        LDF 6
+kerb:   jsr f53dx
+        cmp REC+7,x
+        bne rts2
+        lda REC+6,x
         cmp #$64
         bne :+
         lda #2
-        STF 5
-@r:     rts
+        bne @s5
 :       lda $75F5
         clc
         adc #$63
-        cmp (ziy),y
+        cmp REC+6,x
         bne :+
         lda #0
-        STF 5
-        rts
-:       lda #$2E
-        cmp (ziy),y
+        beq @s5
+:       ldy #0
+        lda REC+6,x
+        cmp #$2E
         bne :+
-        lda $75FC
+        iny
+:       lda $75FB,y
         and #$7F
-        sta $75FC
-        jmp :++
-:       lda $75FB
-        and #$7F
-        sta $75FB
-:       GET_R
+        sta $75FB,y
+        GET_R
         and #2
-        STF 5
+@s5:    sta REC+5,x
         rts
 
 ; L909C: in a cross grid
@@ -516,123 +567,105 @@ cross:  lda w_b
         and #$20
         beq :+
         lda $75D7
-        ldx #1
+        ldy #1
         bne :++
-:       lda w_b
-        eor #2
+:       lda #2
+        eor w_b
         sta w_b
         lda $75D6
-        ldx #$FF
+        ldy #$FF
 :       sta w_d
-        stx w_step
+        sty w_step
         lda w_b
         and #2
         bne tow90ea
-        ldy #0                  ; away from the main road
-        lda (ziy),y
-        sec
-        sbc #1
-        sta (ziy),y
+        dec REC+0,x                 ; away from the main road
+        lda REC+0,x
         cmp #$FC
-        bne r909c
+        bne rts3
         lda #4
-        sta (ziy),y
+        sta REC+0,x
         jsr Z_9230
-        lda w_step              ; HL += step
-        bmi :+
-        jsr hlinc
-        jmp :++
-:       jsr hldec
-:       LDF 8
-        clc
-        adc #1
-        sta (ziy),y
+        jsr hlstep
+        inc REC+8,x
+        lda REC+8,x
         cmp #12
         beq :+
         jmp l9178
 :
-        LDF 1
-        and #$7F
-        sta (ziy),y
-r909c:     rts
-tow90ea:   ldy #0                  ; towards the main road
-        lda (ziy),y
-        clc
-        adc #1
-        sta (ziy),y
+        asl REC+1,x
+        lsr REC+1,x
+rts3:   rts
+tow90ea:
+        inc REC+0,x                 ; towards the main road
+        lda REC+0,x
         cmp #2
         beq mouth
         cmp #5
-        bne r909c
+        bne rts3
         lda #$FD
-        sta (ziy),y
+        sta REC+0,x
         jsr Z_9230
-        lda w_step              ; HL -= step
-        bpl :+
-        jsr hlinc
-        jmp :++
-:       jsr hldec
-:       LDF 8
-        sec
-        sbc #1
-        sta (ziy),y
+        jsr hlunst
+        dec REC+8,x
         bpl l9178
-        LDF 9                   ; (never run)
+        lda REC+9,x                 ; (never run)
         clc
         adc #$64
         sta zl
-        ldx w_d
-        inx
-        LDF 1
+        ldy w_d
+        iny
+        lda REC+1,x
         and #$20
         beq :+
-        dex
-        dex
-:       stx zh
+        dey
+        dey
+:       sty zh
         jmp l9141
-mouth:  LDF 8
-        bne r909c
-        LDF 9
-        beq m9148
+mouth:  lda REC+8,x
+        bne rts3
+        lda REC+9,x
+        beq :+
         lda $75F1
         and #8
-        bne r909c
+        bne rts3
         jsr Z_9230
-        LDF 9
+        lda REC+9,x
         clc
         adc #$65
-        sta zl
-        lda w_d
-        sta zh
-        lda #2
-        bne l913a
-m9148:    lda $75F1
+        ldy #2
+        bne :++
+:       lda $75F1
         and #2
-        bne r909c
+        bne rts3
         jsr Z_9230
         lda #$63
-        sta zl
+        ldy #0
+:       sta zl
         lda w_d
         sta zh
-        lda #0
-l913a:  STF 5
+        tya
+        sta REC+5,x
         lda #1
-        STF 0
-l9141:  LDF 1
+        sta REC+0,x
+l9141:  lda REC+1,x
         and #$BF
-        sta (ziy),y
-l9178:  jsr Z_9274
+        sta REC+1,x
+l9178:  jsr wstx
         jsr Z_9205
-        beq :+
+        bne :+
+        rts
+:
         jmp reverse
-:       rts
 
-
-
+hlstep: lda w_step              ; HL += step
+        bmi hldec
 hlinc:  inc zl
         bne :+
         inc zh
 :       rts
+hlunst: lda w_step              ; HL -= step
+        bmi hlinc
 hldec:  lda zl
         bne :+
         dec zh
@@ -642,45 +675,39 @@ hldec:  lda zl
 ; L9154: along the cross street in a cross grid (never run)
 l9154:  lda w_b
         and #4
-        beq r9154
+        bne :+
+        rts
+:
         jsr Z_9230
         lda w_b
         and #2
-        beq dn9182
+        beq @dn
         lda zl
         clc
         adc #12
         sta zl
         bcc :+
         inc zh
-:       LDF 9
-        clc
-        adc #1
-        sta (ziy),y
-        cmp $75F5
-        bne l9178
+:       inc REC+9,x
         lda $75F5
+        cmp REC+9,x
+        bne l9178
         clc
         adc #$64
-        sta zl
         jmp l9170
-dn9182:    lda zl
+@dn:    lda zl
         sec
         sbc #12
         sta zl
         bcs :+
         dec zh
-:       LDF 9
-        sec
-        sbc #1
-        sta (ziy),y
+:       dec REC+9,x
         bpl l9178
         lda #$63
-        sta zl
-l9170:  jsr f53d
+l9170:  sta zl
+        jsr f53dx
         sta zh
         jmp l9141
-r9154:     rts
 
 ; L918F: spawn a new car (Z80 R register as random source)
 spawn:  lda $75F1
@@ -689,62 +716,54 @@ spawn:  lda $75F1
         sta w_e
         and #3
         sta t1
+        tay
         beq :++
-        tax
 :       asl t0
-        dex
+        dey
         bne :-
 :       lda t0
         and #8
         beq :+
         rts
-:       lda t1
-        STF 5
+:
         lda #1
-        STF 0
+        sta REC+0,x
         lda t1
+        sta REC+5,x
         lsr
         bcs @arm
-        lda #$80                ; main grid
-        STF 1
+        ldy #0                  ; main grid
         lda w_e
         and #4
-        bne :+
-        lda $75D6
-        jmp :++
-:       LDF 1
-        ora #$20
-        sta (ziy),y
-        lda $75D7
-:       STF 7
-        lda t1
-        and #2
         beq :+
+        iny
+        lda #$A0
+        .byte $2C               ; (skip the next lda)
+:       lda #$80
+        sta REC+1,x
+        lda $75D6,y
+        sta REC+7,x
         lda #1
-        bne :++
-:       lda $75F5
+        ldy t1
+        bne :+
+        lda $75F5
         clc
         adc #$C7
-:       STF 6
+:       sta REC+6,x
         rts
 @arm:   lda #$C0                ; cross-street arm, far end (col 11)
-        STF 1
-        lda t1
-        and #2
-        bne :+
-        lda #<$FD60
+        ldy t1
+        cpy #3
+        ldy #0
+        bcc :+
+        lda #$E0
+        ldy #2
+:       sta REC+1,x
+        lda sbase,y
         sta zl
-        lda #>$FD60
+        lda sbase+1,y
         sta zh
-        jmp :++
-:       LDF 1
-        ora #$20
-        sta (ziy),y
-        lda #<$FEBB
-        sta zl
-        lda #>$FEBB
-        sta zh
-:       lda #0
+        lda #0
         sta t0
         lda w_e
         and #4
@@ -754,21 +773,15 @@ spawn:  lda $75F1
         sbc #1
         sta t0
         jsr mul12
-        lda zl
-        clc
-        adc ze
-        sta zl
-        lda zh
-        adc zd
-        sta zh
+        jsr hladde
 :       lda t0
-        STF 9
-        jsr Z_9274
+        sta REC+9,x
         lda #$0B
-        STF 8
-        rts
+        sta REC+8,x
+        jmp wstx
+sbase:  .word $FD60, $FEBB
 
-; S9205: occupy (HL) with the id in za2.  Z = done, NZ = blocked (A = cell)
+
 ; mapz: tp = Oric address of the Spectrum address zh:zl (cross grids moved)
 mapz:   lda zh
         cmp #$FD
@@ -1026,36 +1039,36 @@ lookup: lda t0
 ; S9564: E = connectivity of node (L=zl, H=zh): bit1 N, bit0 E, bit2 W,
 ; bit3 S closed.  zl/zh preserved.
 ZPROC $9564
-        lda zl
-        sta t1
-        lda zh
-        sta t0
         lda #0
         sta ze
+        ldx #3
+@l:     lda zl
+        clc
+        adc dlt,x
+        sta t1
+        lda zh
+        clc
+        adc dht,x
+        sta t0
+        txa
+        pha
         jsr lookup
-        lsr
-        bcc :+
-        ldx #2
-        stx ze
-:       and #8
-        beq :+
-        inc ze
-:       dec t1
-        jsr lookup
-        and #$10
+        sta t2
+        pla
+        tax
+        lda t2
+        and mt,x
         beq :+
         lda ze
-        ora #4
+        ora et,x
         sta ze
-:       inc t1
-        dec t0
-        jsr lookup
-        lsr
-        bcc :+
-        lda ze
-        ora #8
-        sta ze
-:       rts
+:       dex
+        bpl @l
+        rts
+dlt:    .byte 0, 0, $FF, 0      ; (L,H) offsets: N and E of the node, E of
+dht:    .byte 0, 0, 0, $FF      ; the node to the W, N of the node to the S
+mt:     .byte 1, $10, $10, 1
+et:     .byte 2, 1, 4, 8
 
 ; S952F: A = A < 32 ? (HL)[A] : 0  (also B=0, C=A, HL+=A like the original)
 ZPROC $952F
@@ -1080,67 +1093,37 @@ ZPROC $953B
         pha
         lda ZV_9560
         sta zc2
-        sta ze2                 ; temp: s
+        sta ze2                 ; ze2/zd2: s << k
         lda ZV_9560+1
         sta zb2
         sta zd2
-        ldx #4                  ; tp = 16s
-        lda zc2
-        sta tp
-        lda zb2
-        sta tp+1
-:       asl tp
-        rol tp+1
-        dex
-        bne :-
-        lda tp                  ; zl2 = 15s
-        sec
-        sbc zc2
+        lda #$29                ; zl2/zh2: 0x29 + sum
         sta zl2
-        lda tp+1
-        sbc zb2
+        lda #0
         sta zh2
-        asl tp                  ; + 32s = 47s
-        rol tp+1
+        lda #<1509
+        sta t0
+        lda #>1509
+        sta t1
+:       lsr t1
+        ror t0
+        bcc :+
         lda zl2
         clc
-        adc tp
+        adc ze2
         sta zl2
         lda zh2
-        adc tp+1
+        adc zd2
         sta zh2
-        ldx #3                  ; *8 = 376s
-:       asl zl2
-        rol zh2
-        dex
-        bne :-
-        lda zl2                 ; + s = 377s
-        clc
-        adc zc2
-        sta zl2
-        lda zh2
-        adc zb2
-        sta zh2
-        asl zl2                 ; *4 = 1508s
-        rol zh2
-        asl zl2
-        rol zh2
-        lda zl2                 ; + s + 0x29
-        clc
-        adc zc2
-        sta zl2
-        lda zh2
-        adc zb2
-        sta zh2
+:       asl ze2
+        rol zd2
+        lda t0
+        ora t1
+        bne :--
         lda zl2
-        clc
-        adc #$29
-        sta zl2
         sta ZV_9560
         sta zl
         lda zh2
-        adc #0
-        sta zh2
         sta ZV_9560+1
         sta zh
         lda #$29
@@ -1164,40 +1147,34 @@ ZPROC $958B
         lda $7505
         sta zh
         jsr Z_9564              ; ze = E
-        ldx $7504               ; NS_TYPE[L]
-        lda #0
-        cpx #$20
-        bcs :+
-        lda ZV_9382,x
-:       sta rowT
-        ldx $7505               ; EW_TYPE[H]
-        lda #0
-        cpx #$20
-        bcs :+
-        lda ZV_93A2,x
-:       sta colT
-        ldx rowT                ; crossT / curT
-        ldy colT
+        lda $7504               ; NS_TYPE[L]
+        ldy #0
+        jsr styp
+        sta rowT
+        lda $7505               ; EW_TYPE[H]
+        ldy #$20
+        jsr styp
+        sta colT
+        lda $75F0               ; t1 = 4 when heading bit 1
+        and #2
+        asl
+        sta t1
         lda $75F0
         lsr
         bcc :+
         lda rowT
         eor #4
-        tay
         ldx colT
-:       lda $75F0               ; X = curT, Y = crossT
-        and #2
-        beq :+
+        jmp :++
+:       lda colT
+        ldx rowT
+:       eor t1
+        sta crossT
+        sta $7602
         txa
-        eor #4
-        tax
-        tya
-        eor #4
-        tay
-:       sty crossT
-        sty $7602
-        stx curT
-        stx $7601
+        eor t1
+        sta curT
+        sta $7601
         lda $75F0               ; rel = rotl4(E, heading)
         and #3
         tax
@@ -1243,39 +1220,23 @@ ZPROC $958B
         lsr
         eor $75F0
         and #1
-        eor #1
-        ora #2                  ; 0 -> 2, 1 -> 3
+        eor #3                  ; 0 -> 3, 1 -> 2
 :       asl
         tax
         lda crossT               ; D75E7
-        bpl @e7
-        and #4
-        beq @e7
-        lda T_98D4,x            ; (never run)
-        and #$1E
-        beq @e7
-        lda T_98D4,x
-        eor #$1E
-        jmp :+
-@e7:    lda T_98D4,x
-:       sta $75E7
+        ldy #$1E
+        jsr onew
+        sta $75E7
+        inx
         lda curT                 ; D75EC
-        bpl @ec
-        and #4
-        beq @ec
-        lda T_98D4+1,x          ; (never run)
-        and #$33
-        beq @ec
-        lda T_98D4+1,x
-        eor #$33
-        jmp :+
-@ec:    lda T_98D4+1,x
-:       sta $75EC
-        lda #0
-        cpx #2
+        ldy #$33
+        jsr onew
+        sta $75EC
+        ldy #0
+        cpx #3
         bne :+
-        lda #1
-:       sta $75F2
+        iny
+:       sty $75F2
         lda curT                 ; current street type changed?
         cmp $75F4
         beq @same
@@ -1294,7 +1255,7 @@ ZPROC $958B
         sta $75D6,y
         dey
         bpl :-
-@same:  lda crossT               ; crossT-street class record (T755D)
+@same:  lda crossT               ; cross-street class record (T755D)
         and #3
         cmp #3
         bne :+
@@ -1318,14 +1279,12 @@ ZPROC $958B
         bne :-
         lda rel
         and #4
-        beq :+
-        lda #2
-:       sta $788C
+        lsr
+        sta $788C
         lda rel
         and #1
-        beq :+
-        lda #2
-:       sta $78AF
+        asl
+        sta $78AF
         ; ---- building heights of the 2 segments (2 lists each)
         lda $75F0
         and #3
@@ -1378,8 +1337,7 @@ ZPROC $958B
         sta ZV_9563
         sta w_d
         ldx t0                  ; 6 values (de&3)+1 at dest, dest+stride, ...
-        lda #6
-        sta vcnt
+        ldy #6
 :       lda w_e
         and #3
         clc
@@ -1393,55 +1351,44 @@ ZPROC $958B
         ror w_e
         lsr w_d
         ror w_e
-        dec vcnt
+        dey
         bne :-
         lda t1
         sta t0
         dec dcnt
         bne @dst
-        ; side entrance / obstruction flags of this segment
+        ; side entrance / obstruction flags of this segment (Y: 0 FB, 1 FC)
         lda ZV_9562
         and #$12
         bne @nxt
         lda $75DF
         cmp #1
         beq @nxt
-        lda segk
-        cmp #1
-        beq @s2
+        lda #2
+        sec
+        sbc segk
+        tay
+        lda #2
         bit ZV_9563
-        bvc :+
-        lda $75FB
-        ora #2
-        sta $75FB
-        jmp @nxt
-:       lda $78A7
+        bvs @or
+        ldx #0
+        tya
+        beq :+
+        ldx #$12
+:       lda $78A7,x             ; D78A7 / D78B9 bit 5
         ora #$20
-        sta $78A7
-        lda $75FE
-        cmp #2
-        bne :+
-        lda oldFC
-        bpl :+
-        lda $75FB               ; (never run)
-        ora #$80
-        sta $75FB
-:       lda $75FB
-        ora #1
-        sta $75FB
-        jmp @nxt
-@s2:    bit ZV_9563
-        bvc :+
-        lda $75FC
-        ora #2
-        sta $75FC
-        jmp @nxt
-:       lda $78B9
-        ora #$20
-        sta $78B9
-        lda $75FC
-        ora #1
-        sta $75FC
+        sta $78A7,x
+        lda #1
+        cpy #0
+        bne @or
+        ldx $75FE
+        cpx #2
+        bne @or
+        bit oldFC
+        bpl @or
+        ora #$80                ; (never run)
+@or:    ora $75FB,y
+        sta $75FB,y
 @nxt:   lda tofs
         clc
         adc #6
@@ -1449,80 +1396,111 @@ ZPROC $958B
         dec segk
         beq :+
         jmp @seg
-:
-        ; ---- ahead / behind closed
+:       ; ---- ahead / behind closed
+        lda #$40
+        sta t0
+        ldx #$8E
+        ldy #$B1
         lda $75F1
         and #2
-        bne :+
-        lda $788E
-        and #$BF
-        sta $788E
-        lda $78B1
-        and #$BF
-        sta $78B1
-        jmp @beh
-:       lda $788E               ; (never run)
-        ora #$40
-        sta $788E
-        lda $78B1
-        ora #$40
-        sta $78B1
-@beh:   lda $75F1
+        beq :+
+        jsr sbset               ; (never run)
+        jmp :++
+:       jsr sbclr
+:
+        lda #$80
+        sta t0
+        ldx #$8A
+        ldy #$AD
+        lda $75F1
         and #8
         bne :+
-        lda $788A
-        and #$7F
-        sta $788A
-        lda $78AD
-        and #$7F
-        sta $78AD
+        jsr sbclr
         jmp @tail
-:       ldx #12                 ; (never run) bit7 of 787E,7880..788A and
-:       lda $787E,x             ; 78A1,78A3..78AD (the original runs the
-        ora #$80                ; tail below twice, which is idempotent)
-        sta $787E,x
-        lda $78A1,x
-        ora #$80
-        sta $78A1,x
-        dex
-        dex
-        bpl :-
+:       jsr sbset               ; (never run) bit7 of 787E,7880..788A and
+        dex                     ; 78A1..78AD (the original runs the tail
+        dex                     ; twice, which is idempotent)
+        dey
+        dey
+        cpx #$7C
+        bne :-
 @tail:  lda $75F1               ; traffic direction masks with one-way rules
         sta t0                  ; b
         sta t1                  ; c
-        lda $7602
-        bpl @cu
-        and #4                  ; (never run)
-        beq :+
-        lda #1
-        ldx #4
-        bne :++
-:       lda #4
         ldx #1
-:       ora t1
-        sta t1
-        txa
-        ora t0
-        sta t0
-@cu:    lda $7601
-        bpl @st
-        and #4                  ; (never run)
-        beq :+
-        lda #2
-        ldx #8
-        bne :++
-:       lda #8
+        lda $7602
+        jsr omask
         ldx #2
-:       ora t1
-        sta t1
-        txa
-        ora t0
-        sta t0
-@st:    lda t0
+        lda $7601
+        jsr omask
+        lda t0
         sta $7606
         lda t1
         sta $7607
         rts
+
+; A = NS_TYPE/EW_TYPE[A] (Y = 0 / $20), 0 off the map
+styp:   cmp #$20
+        bcs :+
+        sty t0
+        adc t0
+        tay
+        lda ZV_9382,y
+        rts
+:       lda #0
+        rts
+
+; one-way street correction of T98D4[X] (A = street type, Y = mask)
+onew:   sty t0
+        and #$84
+        cmp #$84
+        lda T_98D4,x
+        bcc :+
+        bit t0                  ; (never run)
+        beq :+
+        eor t0
+:       rts
+
+; set / clear the bits t0 of $78xx (X) and $78yy (Y)
+sbset:  lda t0
+        ora $7800,x
+        sta $7800,x
+        lda t0
+        ora $7800,y
+        sta $7800,y
+        rts
+sbclr:  lda t0
+        eor #$FF
+        and $7800,x
+        sta $7800,x
+        lda t0
+        eor #$FF
+        and $7800,y
+        sta $7800,y
+        rts
+
+; one-way rules of a street type A (X = 1 cross / 2 current): b = t0, c = t1
+omask:  bpl @r
+        and #4
+        beq @s
+        txa                     ; (never run)
+        ora t1
+        sta t1
+        txa
+        asl
+        asl
+        ora t0
+        sta t0
+        rts
+@s:     txa
+        ora t0
+        sta t0
+        txa
+        asl
+        asl
+        ora t1
+        sta t1
+@r:     rts
 
 ; ===========================================================================
 ; S98F4: two keys from the table at (zl,zh): D = 0 none, 3 first only,
@@ -1620,7 +1598,7 @@ ZPROC $9965
 ZPROC $9971
         jsr Z_9A55
         lda $75FD
-        bmi @r
+        bmi r9971
         lda $75F5
         sec
         sbc #2
@@ -1630,63 +1608,33 @@ ZPROC $9971
         beq :+
         lda #7
 :       sta w_a
-        lda #<(FDB+$FD77)
-        sta tp
-        lda #>(FDB+$FD77)
-        sta tp+1
-        lda #1
-        sta w_neg
+        lda #<(FDB+$FD77)       ; left arm, BC = -6
+        ldx #>(FDB+$FD77)
+        ldy #3
         jsr s9999
-        lda #<(FDB+$FEBC)
-        sta tp
-        lda #>(FDB+$FEBC)
-        sta tp+1
-        lda #0
-        sta w_neg
-        jmp s9999
-@r:     rts
-
-; S9999 (tp = HL, ze/zd = DE, w_neg: BC = -6 / +6, w_a = A)
-tpde:   lda tp                  ; tp += DE
-        clc
-        adc ze
-        sta tp
-        lda tp+1
-        adc zd
-        sta tp+1
-        rts
-s9999:  inc $75F0
+        lda #<(FDB+$FEBC)       ; right arm, BC = +6
+        ldx #>(FDB+$FEBC)
+        ldy #0
+; S9999 (tp = HL = X:A, ze/zd = DE, Y = 0: BC = +6 / 3: BC = -6, w_a = A)
+s9999:  sta tp
+        stx tp+1
+        sty w_neg
+        inc $75F0
+        ldy #0
         lda $75B5
         cmp #1
         beq :+
-        lda #5
-        bne :++
-:       lda #0
-:       sta mval
+        ldy #5
+:       sty mval
         lda $75F0
         and #2
         beq :+
         jsr tpde
-:       ldy #0
+:       ldx w_neg
+        ldy #0
         lda w_a
         sta (tp),y
-        ldy #6                  ; HL += BC
-        lda w_neg
-        beq :+
-        lda tp
-        sec
-        sbc #6
-        sta tp
-        bcs :++
-        dec tp+1
-        bcc :++
-:       tya
-        clc
-        adc tp
-        sta tp
-        bcc :+
-        inc tp+1
-:       ldy #0
+        jsr tpdx                ; HL += BC
         lda mval
         sta (tp),y
         lda $75F0
@@ -1701,38 +1649,35 @@ s9999:  inc $75F0
         sta tp+1
         jmp :++
 :       jsr tpde
-:       lda w_neg               ; HL += BC<0 ? 5 : -5
-        beq :+
-        lda tp
-        clc
-        adc #5
-        sta tp
-        bcc :++
-        inc tp+1
-        bcs :++
-:       lda tp
-        sec
-        sbc #5
-        sta tp
-        bcs :+
-        dec tp+1
-:       ldy #0
+:       inx                     ; HL += BC<0 ? 5 : -5
+        jsr tpdx
         lda #5
         sta (tp),y
-        lda w_neg               ; HL += BC<0 ? +1 : -1 (B was reloaded
-        beq @m1                 ; with the +-5 above)
-        inc tp
-        bne @w
-        inc tp+1
-        bne @w
-@m1:    lda tp
-        bne :+
-        dec tp+1
-:       dec tp
-@w:     lda w_a
+        inx                     ; HL += BC<0 ? +1 : -1 (B was reloaded
+        jsr tpdx                ; with the +-5 above)
+        lda w_a
         sta (tp),y
         dec $75F0
+r9971:  rts
+tpde:   lda tp                  ; tp += DE
+        clc
+        adc ze
+        sta tp
+        lda tp+1
+        adc zd
+        sta tp+1
         rts
+tpdx:   lda tp                  ; tp += dlo/dhi[X], Y = 0
+        clc
+        adc dlo,x
+        sta tp
+        lda tp+1
+        adc dhi,x
+        sta tp+1
+        ldy #0
+        rts
+dlo:    .byte 6, $FB, $FF, $FA, 5, 1
+dhi:    .byte 0, $FF, $FF, $FF, 0, 0
 
 ; S99DD: A = segment features, w_row = base row: side entrances, the lane
 ; obstruction and the lamp posts of one segment
@@ -1743,22 +1688,13 @@ ZPROC $99DD
         lda w_fl
         lsr
         bcc @nb0
-        lda $75D7               ; entrance markers
-        sta tp+1
-        lda w_row
-        clc
-        adc #$2C
-        tay
-        lda #6
-        sta (tp),y
+        ldx #6                  ; entrance markers
+        lda $75D7
+        ldy #$2C
+        jsr pokep
         lda $75D6
-        sta tp+1
-        lda w_row
-        clc
-        adc #$30
-        tay
-        lda #6
-        sta (tp),y
+        ldy #$30
+        jsr pokep
 @nb0:   lda w_fl
         and #2
         beq @lamps
@@ -1770,27 +1706,24 @@ ZPROC $99DD
         bne :++
 :       ldx $75D7
         dex
-:       stx tp+1
-        lda w_row
-        clc
-        adc #$32
-        tay
+:       txa
+        ldy #$32
+        ldx #$0B
+        jsr pokep
         lda $75DF
         lsr
         bcc @even
-        lda #$0B
-        sta (tp),y
+        ldx #$0A
         tya
-        clc
-        adc #5
+        adc #4                  ; (C=1) +5
         tay
-        lda #$0A
+        txa
         sta (tp),y
         tya
         sec
         sbc #10
         tay
-        lda #$0A
+        txa
         sta (tp),y
         jmp @lamps
 @even:  lda #8                  ; (never run)
@@ -1804,19 +1737,16 @@ ZPROC $99DD
         dey
         lda #$0A
         sta (tp),y
-@lamps: lda $75F0
+@lamps: ldx $75D6
+        ldy $75D7
+        lda $75F0
         and #2
-        beq :+
-        lda $75D6
+        bne :+
         ldx $75D7
-        bne :++
-:       lda $75D7
-        ldx $75D6
-:       stx t1
-        sta tp+1
-        lda w_row
-        clc
-        adc #2
+        ldy $75D6
+:       sty t1
+        stx tp+1
+        lda #2
         ldx #4
         jsr s9a49
         lda $75DF
@@ -1824,15 +1754,26 @@ ZPROC $99DD
         beq :+
         lda t1
         sta tp+1
-        lda w_row
-        clc
-        adc #$0E
+        lda #$0E
         ldx #3
         jmp s9a49
 :       rts
 
-; S9A49: lamp posts (value 4) on page tp+1 at row A, then X more every 24 rows
-s9a49:  tay
+; [page A, row w_row+Y] = X (tp = 0); Y = the row
+pokep:  sta tp+1
+        tya
+        clc
+        adc w_row
+        tay
+        txa
+        sta (tp),y
+        rts
+
+; S9A49: lamp posts (value 4) on page tp+1 at row w_row+A, then X more
+; every 24 rows
+s9a49:  clc
+        adc w_row
+        tay
         lda #4
         sta (tp),y
 :       tya
@@ -1847,103 +1788,79 @@ s9a49:  tay
 
 ; S9A55: petrol station on a straight 2-lane street (never run past the tests)
 ZPROC $9A55
-        lda $75FD
-        and #$7F
-        sta $75FD
+        asl $75FD               ; bit 7 off (set again below if a station)
         lda $75F1
         and #$0F
         cmp #5
-        bne @r
+        bne @c
         lda $75DF
         cmp #2
-        bne @r
+        bne @c
         lda $75B5
         cmp #1
-        bne @r
+        bne @c
+        sec
+        ror $75FD
         lda $7504
         eor $7505
         lsr
         eor $75F0
-        tax
-        lda $75FD
-        ora #$80
-        sta $75FD
-        txa
+        ldy #9
         and #2
         beq @right
         lda #0
         sta $788C
-        lda #9
-        sta FDB+$FDA6
-        sta FDB+$FDA6+$24
+        sty FDB+$FDA6
+        sty FDB+$FDA6+$24
         lda #1
         bne @e
-@right: lda #0
-        sta $78AF
-        lda #9
-        sta FDB+$FEED
-        sta FDB+$FEED+$24
+@right: sta $78AF
+        sty FDB+$FEED
+        sty FDB+$FEED+$24
         lda #4
 @e:     sta $75F1
         lda #0
         sta $75E7
-@r:     rts
+        rts
+@c:     lsr $75FD
+        rts
 
 ; ===========================================================================
 ; S9AA8: remap the traffic cars and objects after a node transition
 ; ===========================================================================
-exx:    ldx zc                  ; Z80 EXX on the zero-page register file
-        ldy zc2
-        stx zc2
-        sty zc
-        ldx zb
-        ldy zb2
-        stx zb2
-        sty zb
-        ldx ze
-        ldy ze2
-        stx ze2
-        sty ze
-        ldx zd
-        ldy zd2
-        stx zd2
-        sty zd
-        ldx zl
-        ldy zl2
-        stx zl2
-        sty zl
-        ldx zh
-        ldy zh2
-        stx zh2
-        sty zh
+exx:    ldx #5                  ; Z80 EXX on the zero-page register file
+:       lda zc,x                ; (zc..zh and zc2..zh2 are contiguous, zx.s)
+        ldy zc2,x
+        sta zc2,x
+        sty zc,x
+        dex
+        bpl :-
         rts
 
 ZPROC $9AA8
         jsr Z_BB18
         lda $75FE
         sta w_fe
-        ldx #<(Z_9D94-1)
-        ldy #>(Z_9D94-1)
+        ldx #0                  ; handler index into htab
         and #4
-        bne set9acd
+        bne @set
+        ldx #6                  ; (never run) left / right turn
         lda w_fe
         and #2
-        bne :+
-        ldx #<(Z_9BD6-1)           ; (never run) left / right turn
-        ldy #>(Z_9BD6-1)
-        bne set9acd
-:       lda $75FD
+        beq @set
+        lda $75FD
         and #$FE
         sta $75FD
-        ldx #<(Z_9B4A-1)
-        ldy #>(Z_9B4A-1)
+        ldx #2
         lda w_fe
         lsr
-        bcc set9acd
-        ldx #<(Z_9BB6-1)           ; (never run) backward
-        ldy #>(Z_9BB6-1)
-set9acd:   stx hjmp
-        sty hjmp+1
+        bcc @set
+        ldx #4                  ; (never run) backward
+@set:   stx hjmp+2
+        lda htab,x
+        sta hjmp
+        lda htab+1,x
+        sta hjmp+1
         lda #<$770E             ; the 3 traffic cars
         sta ziyl
         lda #>$770E
@@ -1952,22 +1869,23 @@ set9acd:   stx hjmp
         sta w_par
         lda #1
         sta w_id
-        lda #3
-        sta w_cnt
-l1_9ae1:    jsr callh
-        LDF 1
+@l1:    jsr callh
+        ldy #1
+        lda (ziy),y
         bpl :+
         lda w_id
         sta za2
         jsr Z_9205
         beq :+
-        LDF 1                   ; (never run)
+        ldy #1                  ; (never run)
+        lda (ziy),y
         and #$7F
         sta (ziy),y
 :       jsr nextiy
         inc w_id
-        dec w_cnt
-        bne l1_9ae1
+        lda w_id
+        cmp #4
+        bne @l1
         lda #16                 ; the 16 objects, player first
         sta $7603
         lda #<$7792
@@ -1979,7 +1897,8 @@ l1_9ae1:    jsr callh
         lda #$0C
         sta w_id
 l2_9b10:    jsr callh
-        LDF 1
+        ldy #1
+        lda (ziy),y
         bpl l9b39
         lda w_id
         sta za2
@@ -1987,12 +1906,14 @@ l2_9b10:    jsr callh
         jsr exx
         jsr Z_B412
         beq l9b39
-        LDF 2                   ; (never run)
+        ldy #2                  ; (never run)
+        lda (ziy),y
         and #6
         cmp #6
         bne :+
         jsr Z_DC4C
-:       LDF 1
+:       ldy #1
+        lda (ziy),y
         and #$7F
         sta (ziy),y
 l9b39:  jsr nextiy
@@ -2001,114 +1922,136 @@ l9b39:  jsr nextiy
         bne l2_9b10
         jmp Z_DE15
 
-callh:  lda hjmp+1               ; handler: A = D75FE, w_par = C, w_id = E
+htab:   .word Z_9D94-1, Z_9B4A-1, Z_9BB6-1, Z_9BD6-1
+
+; handler call: W = record, A = D75FE, w_par = C, w_id = E; W written back.
+; A handler that skips the loop's occupancy step leaves through skip.
+callh:  ldy #1                  ; inactive record: only D9D94 (any) and
+        lda (ziy),y             ; D9B4A's L9B8F (objects without +2 bit 1)
+        bmi @f                  ; do anything - skip the copies otherwise
+        lda hjmp+2              ; handler index: 0 D9D94, 2 D9B4A
+        beq @f
+        cmp #2
+        bne @r
+        lda w_par
+        and #2
+        beq @r
+        iny
+        lda (ziy),y
+        and #2
+        bne @r
+@f:     jsr win
+        jsr @h
+        jmp wout
+@h:     lda hjmp+1
         pha
         lda hjmp
         pha
         lda w_fe
-        rts
-
-nextiy: lda ziyl
-        clc
-        adc #12
-        sta ziyl
-        bcc :+
-        inc ziyh
-:       rts
+@r:     rts
+skip:   jsr wout
+skip2:  pla                     ; drop the handler's and callh's returns
+        pla
+        pla
+        pla
+        jmp l9b39
 
 ; D9B4A: forward step - keep what was beyond the junction, drop the rest
 ZPROC $9B4A
-        LDF 1
+        lda W+1
         bpl new
         and #$7F
-        sta (ziy),y
+        sta W+1
         and #$40
         bne drop9b8c
-        LDF 6
+        lda W+6
         cmp #$64
         bcs drop9b8c
         adc #$64
         clc
         adc $75F5
-keep:   STF 6                   ; 9B66
+keep:   sta W+6                 ; 9B66
         sta zl
-        LDF 1
+        lda W+1
         ora #$80
-        sta (ziy),y
-        LDF 7
+        sta W+1
+        lda W+7
         sta zh
         lda w_par
         and #2
         beq r9b66
         lda #0
-        STF 10
+        sta W+10
         lda zl
         pha
         lda zh
         pha
+        jsr wout
         jsr Z_B241
+        jsr win
         pla
         sta zh
         pla
         sta zl
-r9b66:     LDF 6
+r9b66:  lda W+6
         rts
-drop9b8c:  jsr Z_9B7F
+drop9b8c:
+        jsr Z_9B7F
 new:    lda w_par               ; L9B8F: objects get a fresh one ahead
         and #2
         beq r9b8f
-        LDF 2
+        lda W+2
         and #2
         bne r9b8f
         lda #0
-        STF 5
+        sta W+5
         lda ZV_9561
         and #$1F
         clc
         adc #$3C
-        STF 6
+        sta W+6
         lda $7607
         and #2
         bne r9b8f
+        jsr wout
         jsr Z_B1BC
+        jsr win
         lda #0
-        STF 11
-        pla
-        pla
-        jmp l9b39
-r9b8f:    rts
+        sta W+11
+        jmp skip
+r9b8f:  rts
 
 ; S9B7F: a special vehicle (+2 bits 1 and 2) was lost
 ZPROC $9B7F
-        LDF 2
+        lda W+2
         and #6
         cmp #6
         bne :+
-        jmp Z_DC4C              ; (never run)
+        jsr wout                ; (never run)
+        jsr Z_DC4C
+        jmp win
 :       rts
 
 ; D9BB6: backward step (never run)
 ZPROC $9BB6
-        LDF 1
-        bmi :+
-        rts
-:       and #$7F
-        sta (ziy),y
+        lda W+1
+        bpl r9b8f
+        and #$7F
+        sta W+1
         and #$40
-        bne @drop
-        LDF 6
+        bne Z_9B7F
+        lda W+6
         sec
         sbc $75FF
-        bcc @drop
+        bcc Z_9B7F
         sbc #$69
-        bcc @drop
+        bcc Z_9B7F
         adc #4                  ; C=1: +5
         jmp keep
-@drop:  jmp Z_9B7F
 
 ; D9D94: U-turn - mirror every record about the grid centre
 ZPROC $9D94
-        LDF 5
+        lda W+5
         tax
         clc
         adc #2
@@ -2117,18 +2060,18 @@ ZPROC $9D94
         txa
         and #$0C
         ora t0
-        sta (ziy),y
-        LDF 1
+        sta W+5
+        lda W+1
         eor #$20
-        sta (ziy),y
+        sta W+1
         and #$40                ; SF2FE
         beq :+
-        LDF 9
+        lda W+9
         clc
         adc #$64
-        jmp :++
-:       LDF 6
-:       sta w_y
+        .byte $2C               ; (skip lda W+6)
+:       lda W+6
+        sta w_y
         lda $75F5
         clc
         adc #$C7
@@ -2136,45 +2079,31 @@ ZPROC $9D94
         adc w_par
         sec
         sbc w_y
-        sta t1
-        LDF 1
-        and #$40
-        beq @main
-        lda t1                  ; in a cross grid
-        sec
+        bit W+1
+        bvc @main
+        sec                     ; in a cross grid
         sbc #$64
         bcs :+
         lda #0
 :       cmp $75F5
         bcc :+
         sbc #1                  ; (never run)
-        jmp :-
-:       STF 9
+        bcs :-
+:       sta W+9
         jsr b9dd
-        LDF 8
+        lda W+8
         sta ze
         lda #0
         sta zd
-        LDF 1
+        lda W+1
         and #$20
         beq :+
-        lda zl
-        clc
-        adc ze
-        sta zl
-        bcc @st
-        inc zh
-        bcs @st
-:       lda zl
-        sec
-        sbc ze
-        sta zl
-        bcs @st
-        dec zh
-@st:    jsr Z_9274
+        jsr hladde
+        jmp @st
+:       jsr hlsube
+@st:    jsr wst
         jmp @tail
-@main:  lda t1
-        sta zl
+@main:  sta zl
         lda w_par
         lsr
         bcs @k
@@ -2185,57 +2114,55 @@ ZPROC $9D94
         sbc $75F5
         cmp #$92
         bne @k
-@off:   LDF 1                   ; (never run)
-        and #$7F
-        sta (ziy),y
+@off:   asl W+1                 ; (never run)
+        lsr W+1
 @k:     lda zl
-        STF 6
+        sta W+6
         lda #$BF
         sec
-        iny
-        sbc (ziy),y
-        sta (ziy),y
+        sbc W+7
+        sta W+7
         sta zh
 @tail:  lda w_id
         cmp #$0C
         beq :+
         rts
-:       pla
-        pla
+:
+        jsr wout
         jsr Z_F4A7
         jsr Z_F2D1
-        jmp l9b39
+        jmp skip2
 
 ; D9BD6: left / right turn - rotate every record through the junction
 ; square (never run in the coverage; code shown as data in te.lst)
 ZPROC $9BD6
-        LDF 1
+        lda W+1
         bmi :+
         rts
-:       jsr backup
+:
+        jsr bkup
         lda w_par
         and #2
         beq @a                  ; traffic
         lda w_id
         cmp #$0C
         beq @a                  ; player
-        LDF 5
+        lda W+5
         lsr
         bcs @a
-        LDF 10
+        lda W+10
         lsr
         bcs @a
         jsr Z_9D62
-@a:     LDF 1                   ; 9BFA
-        and #$40
-        beq :+
-        LDF 9
+@a:     bit W+1                 ; 9BFA
+        bvc :+
+        lda W+9
         sta xc
         lda $75FF
         sec
         sbc #1
         jmp :++
-:       LDF 6
+:       lda W+6
         sta xc
         lda $75FF
         clc
@@ -2257,11 +2184,10 @@ ZPROC $9BD6
         bcs :+
         eor #$FF
         adc #1
-        ldx #1
+        inx
 :       sta xt
-        stx xsgn
-        lda w_fe                ; c' = turn ^ sgn
-        eor xsgn
+        txa                     ; c' = turn ^ sgn
+        eor w_fe
         sta xc
         lda xt
         lsr
@@ -2270,10 +2196,9 @@ ZPROC $9BD6
         sta xb                  ; lateral
         lda xt
         and #7
-        sta t0
-        lda #4
+        eor #$FF
         sec
-        sbc t0
+        adc #4                  ; 4 - (t&7)
         sta xd
         lda w_par
         and #2
@@ -2288,35 +2213,31 @@ ZPROC $9BD6
         cmp $75DF
         bcc :+
         lda $75DF
-:       sta t0
+:       tax
         lda xc
         lsr
-        lda t0
+        txa
         bcs :+
         eor #$FF
 :       clc
         adc #$60
         sta xh
-        LDF 7
-        sta xold
-        lda xh
-        sta (ziy),y
-        LDF 1
-        and #$40
-        beq @mg
-        lda (ziy),y
+        ldx W+7                 ; old page
+        sta W+7
+        bit W+1
+        bvc @mg
+        lda W+1
         and #$BF
-        sta (ziy),y
+        sta W+1
         lda $7609
-        ldy #8
         clc
-        adc (ziy),y
+        adc W+8
         sta xdist
-        LDF 1
+        lda W+1
         and #$20
         bne @rt
         beq @s1
-@mg:    lda xold
+@mg:    txa
         sec
         sbc #$60
         sta xdist
@@ -2339,12 +2260,9 @@ ZPROC $9BD6
         asl
         asl
         sec
-        ldy #0
-        sbc (ziy),y
-        sta t0
-        lda xd
-        sta (ziy),y
-        lda t0
+        sbc W+0
+        ldx xd
+        stx W+0
         sec
         sbc #4
         bcs :+
@@ -2380,175 +2298,133 @@ ZPROC $9BD6
         lsr
         clc
         adc xl
-        STF 6
+        sta W+6
         sta xl
         sta tp
         lda xh
         sta tp+1
         ldy #0
         lda (tp),y
-        bmi :+
-        jmp @l9d05
-:
+        bpl @l9d05
         and #$40
         bne @open
-@drop:  jsr restore
-        LDF 1
-        and #$7F
-        sta (ziy),y
+@drop:  jsr rstr
+        asl W+1
+        lsr W+1
         jmp Z_9B7F
 @open:  lda xl
         sec
         sbc #$64
-        STF 9
+        sta W+9
         jsr mul12
         lda xc
-        lsr
-        bcc :+
-        lda #<$FEB0
-        ldx #>$FEB0
-        bne :++
-:       lda #<$FD6B
-        ldx #>$FD6B
-:       clc
-        adc ze
-        sta tp
-        txa
-        adc zd
-        sta tp+1
+        and #1
+        asl
+        tay
+        jsr armb
         lda xb
         sec
         sbc $75DF
         cmp #12
         bcs @drop
-        STF 8
+        sta W+8
         sta ze
+        lda #0
+        sta zd
         lda xc
         lsr
         bcc :+
-        lda tp
-        clc
-        adc ze
-        sta tp
-        bcc :++
-        inc tp+1
-        bcs :++
-:       lda tp
-        sec
-        sbc ze
-        sta tp
-        bcs :+
-        dec tp+1
-:       lda #0
-        sta zd
-        LDF 1
+        jsr hladde
+        jmp :++
+:       jsr hlsube
+:       lda W+1
         ora #$40
-        sta (ziy),y
-        lda tp
+        sta W+1
+        jsr wst
+        lda zl
         sta xl
-        STF 6
-        lda tp+1
+        lda zh
         sta xh
-        STF 7
-@l9d05: LDF 1
+@l9d05: lda W+1
         ora #$20
-        sta (ziy),y
+        tax
         lda xc
         lsr
+        txa
         bcs :+
-        lda (ziy),y
         and #$DF
-        sta (ziy),y
-:       LDF 5                   ; direction rotates with the turn
-        sta t0
-        lda w_fe
+:       sta W+1
+        lda w_fe                ; direction rotates with the turn
         lsr
-        lda t0
+        lda W+5
         bcc :+
         sbc #2                  ; C=1
 :       clc
         adc #1
+        eor W+5
         and #3
-        sta t1
-        lda t0
-        and #$FC
-        ora t1
-        sta (ziy),y
+        eor W+5
+        sta W+5
         lda xl
         sta zl
         lda xh
         sta zh
         lda w_id
         cmp #$0C
-        beq :+
-        rts
-:       LDF 1                   ; player: back onto the main road
-        and #$40
-        beq :+
-        lda (ziy),y
+        bne @r
+        bit W+1                 ; player: back onto the main road
+        bvc :+
+        lda W+1
         and #$BF
-        sta (ziy),y
+        sta W+1
         jsr f53d
         sta zh
-        STF 7
-        LDF 9
+        sta W+7
+        lda W+9
         clc
         adc #$64
         sta zl
-        STF 6
+        sta W+6
 :       jsr Z_9D62
-        LDF 7
+        lda W+7
         sta zh
         cmp $75D6
         bne :+
-        clc
-        adc #1
-        sta (ziy),y
+        inc W+7
         inc zh
-        rts
+@r:     rts
 :       cmp $75D7
-        bne :+
-        sec
-        sbc #1
-        sta (ziy),y
+        bne @r
+        dec W+7
         dec zh
-:       rts
+        rts
 
 ; 9D62: finish a pending sideways step
 ZPROC $9D62
-        LDF 1
+        lda W+1
         and #$FB
-        sta (ziy),y
-        ldy #0
-        lda (ziy),y
-        bne :+
-        rts
-:       tax
-        lda #0
-        sta (ziy),y
-        cpx #4
-        bcs :+
-        rts
-:       LDF 1
+        sta W+1
+        lda W+0
+        beq @r
+        ldx #0
+        stx W+0
+        cmp #4
+        bcc @r
+        lda W+1
         and #$20
-        bne @r
-        LDF 7
-        clc
-        adc #1
-        sta (ziy),y
+        bne :+
+        inc W+7
+        lda W+7
         cmp #$60
-        bne :+
-        LDF 1
+        bne @r
+        lda W+1
         ora #$20
-        sta (ziy),y
-:       rts
-@r:     LDF 7
-        sec
-        sbc #1
-        sta (ziy),y
+        bne @s
+:       dec W+7
+        lda W+7
         cmp #$5F
-        bne :+
-        LDF 1
+        bne @r
+        lda W+1
         and #$DF
-        sta (ziy),y
-:       rts
+@s:     sta W+1
+@r:     rts
