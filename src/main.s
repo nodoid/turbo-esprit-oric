@@ -8,7 +8,9 @@
         .include "zx.inc"
         .include "snd.inc"
 
-        .import hw_init, view_init
+        .import hw_init, view_init, any_key, gfx_cls, gfx_textinit
+        ZIMPORT $A526
+        ZIMPORT $A695
         .importzp frames
 
         ; routines translated in other modules
@@ -90,6 +92,7 @@ start:  sei
         lda #$1E
         sta MODEREG
         cli
+        jsr gfx_textinit
         jsr view_init
         jmp Z_FD11
 
@@ -362,10 +365,220 @@ L74A8:  jsr Z_BA5F
 @r:     rts
 
 ; ---------------------------------------------------------------------------
-; S728D: the legal screen shown at start-up
+; S728D: the copyright screen shown at start-up.  The original printed two
+; texts with the ROM's PR-STRING; the first (copyright notice) is shown here
+; from the original data at $6DB7 (still in memory at this point): control
+; codes AT/INK/PAPER/BRIGHT, CR, ROM-font characters and the UDG logo
+; ($90-$9D, graphics at $71CD).  The second text (the 1986 cassette-forgery
+; reward offer) is not shown.
+LEGAL     = $6DB7
+LEGAL_LEN = $0174
+UDG       = $71CD
 Z_728D:
+        lda #$0F                ; white ink on blue paper
+        jsr gfx_cls
+        jsr Z_A4C9              ; text mode, screen, ROM font, overwrite
+        .byte 0
+        lda #0
+        sta lcol
+        sta lrow
+        lda #<LEGAL
+        sta zl2
+        lda #>LEGAL
+        sta zh2
+        ldx #<LEGAL_LEN
+        stx lcnt
+        ldx #>LEGAL_LEN
+        stx lcnt+1
+@next:  lda lcnt
+        ora lcnt+1
+        beq @key
+        jsr lget
+        cmp #$16                ; AT row, col
+        bne @n1
+        jsr lget
+        sta lrow
+        jsr lget
+        sta lcol
+        jmp @next
+@n1:    cmp #$10                ; INK / PAPER / BRIGHT n: colours fixed
+        bcc @n2
+        cmp #$14
+        bcs @n2
+        jsr lget
+        jmp @next
+@n2:    cmp #$0D                ; CR
+        bne @n3
+        lda #0
+        sta lcol
+        inc lrow
+        jmp @next
+@n3:    cmp #$90                ; UDG logo
+        bcc @chr
+        sec
+        sbc #$90
+        jsr udg
+        jmp @adv
+@chr:   pha
+        jsr lpos
+        pla
+        jsr Z_A695
+@adv:   inc lcol
+        lda lcol
+        cmp #32                 ; the ROM wraps lazily: col 32, then CR = 1 line
+        bne @next
+        lda #0
+        sta lcol
+        inc lrow
+        ; a CR straight after a wrap only completes the wrap
+        lda lcnt
+        ora lcnt+1
+        beq @key
+        ldy #0
+        lda (zl2),y
+        cmp #$0D
+        bne @next
+        jsr lget
+        jmp @next
+@key:   jsr Z_A4C9              ; lower screen: "PRESS ANY KEY TO CONTINUE."
+        .byte 26, $FF, 24, 184
+        .byte "PRESS ANY KEY TO CONTINUE."
+        .byte 0
+@up:    jsr any_key             ; wait for all keys up, then a key
+        bne @up
+@dn:    jsr any_key
+        beq @dn
+@up2:   jsr any_key
+        bne @up2
         rts
 
+lget:   ldy #0
+        lda (zl2),y
+        inc zl2
+        bne :+
+        inc zh2
+:       pha
+        lda lcnt
+        bne :+
+        dec lcnt+1
+:       dec lcnt
+        pla
+        rts
+
+; lpos: print position = Spectrum (8*col, 8*row)
+lpos:   lda lcol
+        asl a
+        asl a
+        asl a
+        sta zc
+        lda lrow
+        asl a
+        asl a
+        asl a
+        sta zb
+        jmp Z_A526
+
+; udg: draw UDG A (0-13) at (lcol, lrow) straight onto the Oric screen
+; (white ink pixels on the blue line set up by gfx_cls)
+udg:    asl a
+        asl a
+        asl a
+        adc #<UDG
+        sta zl
+        lda #>UDG
+        adc #0
+        sta zh
+        lda #0
+        sta urow
+@row:   ldy urow
+        lda (zl),y
+        sta ubits
+        ; Spectrum x of the first pixel, +6 for the Oric
+        lda lcol
+        asl a
+        asl a
+        asl a
+        clc
+        adc #6
+        sta upx
+        lda #8
+        sta ucnt
+@pix:   asl ubits
+        bcc @skip
+        ; Oric line = 8*row + urow + 4
+        lda lrow
+        asl a
+        asl a
+        asl a
+        adc urow
+        adc #4
+        tax
+        lda upx
+        jsr gfx_setpix
+@skip:  inc upx
+        dec ucnt
+        bne @pix
+        inc urow
+        lda urow
+        cmp #8
+        bne @row
+        rts
+
+; gfx_setpix: X = HIRES line, A = Oric pixel x -> set the pixel (ink)
+gfx_setpix:
+        ldy #0
+@d:     cmp #6
+        bcc @m
+        sbc #6
+        iny
+        bne @d
+@m:     sty ucol
+        tay
+        lda pixbit,y
+        sta umask
+        lda #0
+        sta ve+1
+        txa                     ; line * 40 = line*32 + line*8
+        asl a
+        rol ve+1
+        asl a
+        rol ve+1
+        asl a
+        rol ve+1
+        sta ve
+        lda ve+1
+        sta vt2
+        lda ve
+        asl a
+        rol vt2
+        asl a
+        rol vt2
+        clc
+        adc ve
+        sta ve
+        lda vt2
+        adc ve+1
+        adc #>HIRES
+        sta ve+1
+        ldy ucol
+        lda (ve),y
+        ora umask
+        sta (ve),y
+        rts
+pixbit: .byte $20, $10, $08, $04, $02, $01
+
+        .zeropage
+ve:     .res 2
         .bss
+lcol:   .res 1
+lrow:   .res 1
+lcnt:   .res 2
+urow:   .res 1
+ubits:  .res 1
+upx:    .res 1
+ucnt:   .res 1
+ucol:   .res 1
+umask:  .res 1
+vt2:    .res 1
 dtmp:   .res 1
 dc:     .res 1

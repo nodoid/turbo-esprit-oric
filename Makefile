@@ -3,6 +3,9 @@ AS      = ca65
 LD      = ld65
 BUILD   = build
 TAP     = $(BUILD)/turbo.tap
+DSK     = $(BUILD)/turbo.dsk
+# tap2dsk (Euphoric tools, carries Sedoric 3) - needed for the disk image
+TAP2DSK ?= tap2dsk
 ORIC    = $(HOME)/Downloads/Oric v1.8.3/Oric.app
 
 SRCS    = $(wildcard src/*.s)
@@ -10,7 +13,10 @@ SRCS    = $(wildcard src/*.s)
 DSRCS   = data/view_data.s data/gfx_data.s
 OBJS    = $(patsubst src/%.s,$(BUILD)/%.o,$(SRCS)) $(patsubst data/%.s,$(BUILD)/data_%.o,$(DSRCS))
 
-all: $(TAP)
+all: $(DSK) $(TAP)
+
+$(DSK): $(BUILD)/turbo.bin data/loadscr.bin tools/mkdsk.py
+	TAP2DSK=$(TAP2DSK) python3 tools/mkdsk.py $@ data/loadscr.bin $(BUILD)/turbo.bin $(BUILD)/turbo.bin.ovl
 
 $(BUILD)/%.o: src/%.s $(wildcard src/*.inc) | $(BUILD)
 	$(AS) -g -I src -I data --bin-include-dir data -o $@ $<
@@ -36,8 +42,9 @@ extract:
 $(BUILD):
 	mkdir -p $(BUILD)
 
-run: $(TAP)
-	open -a "$(ORIC)" $(TAP)
+# runs the disk in Oricutron (Atmos + Microdisc); OCDIR = Oricutron directory
+run: $(DSK)
+	tools/ocdisk.sh $(DSK) 0
 
 clean:
 	rm -rf $(BUILD)
