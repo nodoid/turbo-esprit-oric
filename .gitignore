@@ -1,0 +1,5 @@
+# object files and build output
+*.o
+build/
+.DS_Store
+__pycache__/
