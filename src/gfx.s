@@ -27,7 +27,7 @@
         .export gfx_linebase, gfx_lz, gfx_glyph, gfx_textinit, gfx_arng, gfx_km
         .export TEXTROW0, TEXTROW1
         .exportzp lzs, lzd, lzc
-        .import T_FONT6, T_FEXC, T_FEXCC, T_AA2F, T_A98E, T_A0BF  ; data/gfx_data.s
+        .import T_FEXC, T_FEXCC, T_AA2F, T_A98E, T_A0BF  ; data/gfx_data.s
 
 TEXTROW0 = $BF68                ; Spectrum char row 22 (PENALTY/SCORE)
 TEXTROW1 = $BF68 + 40           ; Spectrum char row 23 (messages)
@@ -123,8 +123,6 @@ gry:    .res 1
 gch:    .res 1
 gbufh:  .res 8
 gbufl:  .res 8
-fontok: .res 1
-gbitb:  .res 1
 plotv:  .res 2
 lk0:    .res 1
 lk1:    .res 1
@@ -928,10 +926,7 @@ gfx_glyph:
         beq g_exc
         dey
         bpl :-
-g_rom:  lda fontok
-        bne :+
-        jsr fontinit
-:       lda #<CHARSET
+g_rom:  lda #<CHARSET
         ldy #>CHARSET
         ldx #$0A                ; asl: charset rows are pixel columns 1-6
         bne g_b
@@ -1228,48 +1223,6 @@ gnm1:   .byte $CF, 0, $C3, 0, $C0
 gm0:    .byte $FF
 gm1:    .byte $FF
 
-; fontinit: unpack the 6-bit ROM font (T_FONT6) into the charset at $9900,
-; once
-fontinit:
-        lda fontok
-        bne fi_r
-        inc fontok
-        lda #<T_FONT6
-        sta lzs
-        lda #>T_FONT6
-        sta lzs+1
-        lda #<(CHARSET + 32*8)
-        sta lzd
-        lda #>(CHARSET + 32*8)
-        sta lzd+1
-        lda #$80
-        sta gbitb
-fi_o:   lda #1
-fi_b:   asl gbitb
-        bne :+
-        pha
-        ldy #0
-        lda (lzs),y
-        inc lzs
-        bne fi_n
-        inc lzs+1
-fi_n:   sec
-        rol
-        sta gbitb
-        pla
-:       rol
-        cmp #$40
-        bcc fi_b
-        and #$3F
-        ldy #0
-        sta (lzd),y
-        inc lzd
-        bne fi_o
-        inc lzd+1
-        lda lzd+1
-        cmp #>(CHARSET + $400)
-        bne fi_o
-fi_r:   rts
 
 ; ===========================================================================
 ; SA911 number printer: A = skip (0,6,..,24), HL = value, E = flags
@@ -1592,10 +1545,10 @@ rcput:  cpx #40
         sta (ptr),y
 :       rts
 
-; gfx_textinit: install the ROM font in the HIRES charset ($9900: chars
-; 32-127, pixel columns 1-6); text rows: ink yellow / green, blank.
+; gfx_textinit: text rows: ink yellow / green, blank.  (The ROM font is
+; loaded with the program into the HIRES charset: segment CHARSET, chars
+; 32-127 at $9900, pixel columns 1-6.)
 gfx_textinit:
-        jsr fontinit
         jsr trclr
         lda #3
         sta TEXTROW0
