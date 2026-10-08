@@ -29,6 +29,7 @@ extract:
 	python3 tools/gen_objects.py orig/TurboEsprit.tzx data/objects_data.s
 	python3 tools/gen_snd.py
 	python3 tools/gen_render.py
+	python3 tools/gen_world.py
 
 $(BUILD):
 	mkdir -p $(BUILD)

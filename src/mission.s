@@ -303,7 +303,17 @@ ldb39:  lda zl
         sta zh
         lda ZV_DA7F
         sta za2
+        lda zl                  ; the original EXXs: position goes in HL'
+        sta zl2
+        lda zh
+        sta zh2
         jsr Z_B412
+        php
+        lda zl2                 ; and comes back (ghost position) in HL'
+        sta zl
+        lda zh2
+        sta zh
+        plp
         bne ldb6d
 ldb4e:  ldy #0
         lda (car),y
