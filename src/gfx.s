@@ -8,25 +8,26 @@
 ;  * screen mode: the Oric HIRES screen.  Spectrum (x,y) -> Oric pixel x+6 on
 ;    line y+4 (docs/PORTING.md section 5).  A pixel position is (line base
 ;    address, column 1..39, mask $20..$01); writes skip columns >= 40 and any
-;    byte whose bit 6 is 0 (attributes) and keep bit 7.
+;    byte whose bit 6 is 0 (attributes) and keep bit 7.  Text with y >= 176
+;    goes to the Oric text rows at $BF68 as character codes.
 ;
 ; The engine's state lives in ZVARs at the Spectrum addresses and with the
 ; Spectrum encodings (A5C4 plot op, A6D7 screen flag, A6BC font, ...), so the
 ; test harness can load and compare it.  In screen mode A685/A687 hold Oric
 ; line base addresses instead of Spectrum screen addresses.
 ;
-; None of these routines touch the zero-page Z80 register file except where
-; the original returns a value there (Z_A638 -> HL), so callers' BC/DE/HL/IX
-; survive (the Z80 versions destroyed them; nobody relied on that).
+; The routines do not touch the zero-page Z80 register file, so callers'
+; BC/DE/HL/IX survive (the Z80 versions destroyed them; nobody relied on it).
 
         .include "zx.inc"
         .include "snd.inc"
+        .include "hw.inc"
 
-        .export gfx_cls, gfx_attr_lines, gfx_attr_rows, gfx_recolour
-        .export gfx_rc_row, gfx_rc_n, gfx_linebase, gfx_curback
-        .export gfx_lz, gfx_glyph, gfx_print, gfx_textinit
+        .export gfx_cls, gfx_attr_rows, gfx_recolour, gfx_rc_row, gfx_rc_n
+        .export gfx_linebase, gfx_lz, gfx_glyph, gfx_textinit, gfx_arng, gfx_km
         .export TEXTROW0, TEXTROW1
-        .exportzp lzs, lzd
+        .exportzp lzs, lzd, lzc
+        .import T_FONT6, T_FEXC, T_FEXCC, T_AA2F, T_A98E, T_A0BF  ; data/gfx_data.s
 
 TEXTROW0 = $BF68                ; Spectrum char row 22 (PENALTY/SCORE)
 TEXTROW1 = $BF68 + 40           ; Spectrum char row 23 (messages)
@@ -36,7 +37,6 @@ TEXTROW1 = $BF68 + 40           ; Spectrum char row 23 (messages)
 ptr:    .res 2          ; current byte = (ptr),y
 msk:    .res 1          ; current pixel mask
 strm:   .res 2          ; stream pointer
-cnt:    .res 1
 err:    .res 1
 minor:  .res 1
 major:  .res 1
@@ -46,14 +46,13 @@ t2:     .res 1
 t3:     .res 1
 fp:     .res 2          ; glyph pointer
 tp:     .res 2          ; token pointer
-gv:     .res 1          ; glyph row value / hi part
-gl:     .res 1          ; lo part
+gv:     .res 1
+gl:     .res 1
 sb0:    .res 1
 sb1:    .res 1
 lzs:    .res 2
 lzd:    .res 2
 lzc:    .res 2
-strmb:  .res 2
 
 ; ---------------------------------------------------------------------------
         .segment "DATA"
@@ -79,39 +78,61 @@ strmb:  .res 2
         ZLABEL $A969, 1         ; beeper inner delay N
         .byte $20
 
-pcol:   .byte 1                 ; screen mode: line column of A685
-tcol:   .byte 1                 ; screen mode: text column (of x & $F8)
-tr:     .byte 0                 ;   and pixel offset in it (0,2,4)
-savesp: .byte 0
-gopm:   .byte 0                 ; glyph op: 0 overwrite, 1 or, 2 xor
-nval:   .word 0
-nflg:   .byte 0
-nidx:   .byte 0
-dxv:    .byte 0
-dyv:    .byte 0
-addx:   .byte 0
-addy:   .byte 0
-fsp:    .byte 0                 ; fill seed stack pointer
-fcnt:   .byte 0
-fd:     .byte 0
-fb:     .byte 0
-fl_p:   .word 0                 ; fill span start (ptr, y, mask)
-fl_y:   .byte 0
-fl_m:   .byte 0
+        .segment "BSS"
+pcol:   .res 1                  ; screen mode: line column of A685
+tcol:   .res 1                  ; screen mode: text column (of x & $F8)
+tr:     .res 1                  ;   and pixel offset in it (0,2,4)
+savesp: .res 1
+cnt:    .res 1                  ; stream item count
+gopm:   .res 1                  ; glyph op: 0 overwrite, 1 or, 2 xor
+nval:   .res 2
+nflg:   .res 1
+nidx:   .res 1
+dxv:    .res 2                  ; line deltas x, y (sign-magnitude)
+amag:   .res 2                  ; |dx|, |dy|
+addv:   .res 2                  ; signed dx, dy
+svl:    .res 2                  ; step routine x, y
+svh:    .res 2
+moff:   .res 1                  ; 0 buffer, 8 screen (step/plot tables)
+fsp:    .res 1                  ; fill seed stack pointer
+fcnt:   .res 1
+fd:     .res 1
+fb:     .res 1
+fl_p:   .res 2                  ; fill span start (ptr, y, mask)
+fl_y:   .res 1
+fl_m:   .res 1
+fsx:    .res 1
+fscr:   .res 1
+rc_cs:  .res 1                  ; gfx_recolour work
+rc_ce:  .res 1
+rc_ia:  .res 1
+rc_pa:  .res 1
+rc_va:  .res 1
+rc_ib:  .res 1
+rc_pb:  .res 1
+rc_vb:  .res 1
+c0v:    .res 1                  ; line colour template (gfx_cls / attr)
+c1v:    .res 1
+tmpl:   .res 1
+km:     .res 1
+kk:     .res 1                  ; ink / paper (Oric numbers) of the last attribute
+pp:     .res 1
+ly:     .res 1
+cnt_l:  .res 1
+gry:    .res 1
+gch:    .res 1
+gbufh:  .res 8
+gbufl:  .res 8
+fontok: .res 1
+gbitb:  .res 1
+plotv:  .res 2
+lk0:    .res 1
+lk1:    .res 1
+lk2:    .res 1
+
+        .segment "DATA"
 gfx_rc_row: .byte 0             ; gfx_recolour: first Spectrum pixel row
 gfx_rc_n:   .byte 8             ;   number of pixel rows
-rc_a:   .byte 0
-rc_cs:  .byte 0
-rc_ce:  .byte 0
-rc_ia:  .byte 0
-rc_pa:  .byte 0
-rc_va:  .byte 0
-rc_ib:  .byte 0
-rc_pb:  .byte 0
-rc_vb:  .byte 0
-c0v:    .byte 0                 ; line attribute template (gfx_cls/attr)
-c1v:    .byte 0
-tmpl:   .byte 0
 
 FSTK = 100
         .segment "HIBSS"
@@ -129,8 +150,6 @@ divtab:
 omask:  .byte $20, $10, $08, $04, $02, $01
 bmask:  .byte $80, $40, $20, $10, $08, $04, $02, $01
 zx2oric:.byte 0, 4, 1, 5, 2, 6, 3, 7
-
-        .import T_ROMFONT, T_AA2F, T_A98E, T_A0BF     ; data/gfx_data.s
 
         .code
 ; ===========================================================================
@@ -160,10 +179,8 @@ entry:  sta ZV_A4F9
         sta strm
         pla
         sta strm+1
-        inc strm
-        bne :+
-        inc strm+1
-:       tsx
+        jsr getb                ; (skip to the first stream byte)
+        tsx
         stx savesp
 ; ---- LA4EF main loop
 next:   jsr getb
@@ -172,35 +189,54 @@ next:   jsr getb
         jmp command
 :       sta cnt
         lda ZV_A4F9
-        beq next__ln
-        jmp text
-next__ln:    jsr getb
+        bne text
+:       jsr getb
         sta dxv
         jsr getb
-        sta dyv
+        sta dxv+1
         jsr line
         dec cnt
-        bne next__ln
+        bne :-
         beq next
 endstr: ldx savesp
         txs
         jmp (strm)
 
-; ---- text items (LA509)
-text:
-text__it:    jsr getb
+; ---- text items (LA509): FF x y / FE dx / FD dy / FC k e
+text:   jsr getb
         cmp #$FC
-        bcs text__ctl
+        bcs t_ctl
         jsr printc
         dec cnt
-        bne text__it
+        bne text
         beq next
-text__ctl:   cmp #$FE
-        beq text__fe
-        bcs text__ff
-        cmp #$FD
-        beq text__fd
-        jsr getb                ; FC k e: number
+t_ctl:  cmp #$FD
+        bcc t_fc
+        beq t_fd
+        lsr
+        bcs t_ff
+        jsr getb                ; FE dx
+        clc
+        adc ZV_A691
+        tax
+        ldy ZV_A691+1
+        bcc t_set
+        bcs t_set
+t_fd:   jsr getb
+        clc
+        adc ZV_A691+1
+        tay
+        ldx ZV_A691
+t_set:  jsr setpos
+        jmp text
+t_ff:   jsr getb
+        pha
+        jsr getb
+        tay
+        pla
+        tax
+        jmp t_set
+t_fc:   jsr getb                ; FC k e: number DA4C3
         pha
         jsr getb
         sta nflg
@@ -210,46 +246,28 @@ text__ctl:   cmp #$FE
         sta nval+1
         pla
         jsr number
-        jmp text__it
-text__ff:    jsr getb
-        sta zc_t
-        jsr getb
-        tay
-        ldx zc_t
-        jsr setpos
-        jmp text__it
-text__fe:    jsr getb
-        clc
-        adc ZV_A691
-        tax
-        ldy ZV_A691+1
-        jsr setpos
-        jmp text__it
-text__fd:    jsr getb
-        clc
-        adc ZV_A691+1
-        tay
-        ldx ZV_A691
-        jsr setpos
-        jmp text__it
-zc_t:   .byte 0
+        jmp text
 
-; ---- commands 80-90
-command:
-        and #$7F
+; ---- commands 80-90 (handlers return to next)
+command:and #$7F
         beq gosub
         cmp #1
         beq retsub
         cmp #$11
-        bcs command__bad                ; 91-FF: invalid in the original
+        bcc :+
+        jmp next                ; 91-FF: invalid in the original
+:
         asl
         tax
-        lda cmdtab+1,x
+        lda #>(next-1)
         pha
-        lda cmdtab,x
+        lda #<(next-1)
         pha
-        rts                     ; handler returns to next via rtsnext
-command__bad:   jmp next
+        lda cmdtab-3,x
+        pha
+        lda cmdtab-4,x
+        pha
+        rts
 gosub:  jsr getb
         asl
         tax
@@ -260,85 +278,69 @@ gosub:  jsr getb
         lda T_A0BF,x
         sta strm
         lda T_A0BF+1,x
-        sta strm+1
-        jmp next
+        bne :+
 retsub: pla
         sta strm
         pla
-        sta strm+1
+:       sta strm+1
         jmp next
 
-cmdtab: .word 0, 0
-        .word c_or-1, c_erase-1, c_xor-1, c_fill-1, c_dither-1, c_move-1
+cmdtab: .word Z_A80F-1, Z_A828-1, Z_A82E-1, c_fill-1, c_dither-1, c_move-1
         .word c_rmove-1, c_mirx-1, c_miry-1, c_text-1, c_scr-1, c_font-1
-        .word next-1, c_cls-1, c_yoff-1
+        .word c_rts-1, c_cls-1, c_yoff-1
 
-c_or:   jsr Z_A80F
-        jmp next
-c_erase:jsr Z_A828
-        jmp next
-c_xor:  jsr Z_A82E
-        jmp next
 c_dither:
         lda #$18
+        ldx #$1C
         sta ZV_A5C4
-        lda #$1C
-        sta ZV_A5C4+1
-        jmp next
-c_mirx: lda ZV_A693
+        stx ZV_A5C4+1
+c_rts:  rts
+c_mirx: ldx #0
+        beq :+
+c_miry: ldx #1
+:       lda ZV_A693,x
         eor #$80
-        sta ZV_A693
-        jmp next
-c_miry: lda ZV_A693+1
-        eor #$80
-        sta ZV_A693+1
-        jmp next
+        sta ZV_A693,x
+        rts
 c_text: lda ZV_A4F9
         eor #$0F
         sta ZV_A4F9
-        jmp next
+        rts
 c_scr:  lda ZV_A6D7
-        bne :+
-        jsr Z_A89B
-        jmp next
-:       jsr Z_A8BF
-        jmp next
+        beq :+
+        jmp Z_A8BF
+:       jmp Z_A89B
 c_font: lda ZV_A6BC
-        bne :+
-        jsr Z_A8D3
-        jmp next
-:       jsr Z_A8DB
-        jmp next
+        beq :+
+        jmp Z_A8DB
+:       jmp Z_A8D3
 c_yoff: jsr getb
         sta ZV_A850
-        jmp next
+        rts
 c_cls:  jsr getb
-        jsr gfx_cls
-        jmp next
+        jmp gfx_cls
 ; 87 x y: move absolute + plot
 c_move: jsr getb
-        tax
+        pha
         jsr getb
-        clc
-        adc ZV_A850
         tay
-        jsr moveto
-        jmp next
+        pla
+        tax
+        jmp :+
 ; 88 dx dy: move relative + plot
 c_rmove:jsr relc
-        tya
+:       tya
         clc
         adc ZV_A850
         tay
-        jsr moveto
-        jmp next
+        jmp moveto
 ; 85 dx dy: flood fill (SA835)
 c_fill: jsr relc
         stx fsx
         jsr addrmask            ; ptr/y/msk of (X,Y), A684 = mask
         jsr fill
         lda ZV_A6D7
-        beq :+
+        beq c_rts
         ; screen mode: the original keeps the line address (byte of the
         ; current x) and takes the seed's bit (SA672 sets DA684 only), so
         ; the next line starts at x' = (x & $F8) | (seed x & 7)
@@ -348,47 +350,31 @@ c_fill: jsr relc
         lda ZV_A691
         and #$F8
         ora t0
-        lsr
-        tay
-        lda divtab,y
-        pha
-        lsr
-        lsr
-        clc
-        adc #1
+        jsr xcr
         sta pcol
-        pla
-        and #3
-        asl
-        sta t0
-        lda fsx
-        and #1
-        ora t0
-        tay
+        ldy t3
         lda omask,y
         sta ZV_A684
-:       jmp next
-fsx:    .byte 0
+        rts
 
 ; SA858: read (dx,dy) -> X = x+-dx, Y = y+-dy (mirrors)
-relc:   jsr getb
-        bit ZV_A693
-        bpl :+
-        eor #$FF
-        clc
-        adc #1
-:       clc
-        adc ZV_A691
-        tax
-        jsr getb
-        bit ZV_A693+1
-        bpl :+
-        eor #$FF
-        clc
-        adc #1
-:       clc
-        adc ZV_A691+1
+relc:   ldx #0
+        jsr :+
+        pha
+        inx
+        jsr :+
         tay
+        pla
+        tax
+        rts
+:       jsr getb
+        ldy ZV_A693,x
+        bpl :+
+        eor #$FF
+        clc
+        adc #1
+:       clc
+        adc ZV_A691,x
         rts
 
 getb:   ldy #0
@@ -423,11 +409,10 @@ setop:  stx ZV_A634
         beq setop
         ZPROC $A89B             ; screen target
         lda #$11
-        sta ZV_A6D7
-        rts
+        bne :+
         ZPROC $A8BF             ; buffer target
         lda #0
-        sta ZV_A6D7
+:       sta ZV_A6D7
         rts
         ZPROC $A8D3             ; custom font
         lda #<$AA2F
@@ -446,11 +431,12 @@ setop:  stx ZV_A634
 
 ; ===========================================================================
 ; Addressing
-; gfx_linebase: A = Spectrum y -> ptr = $A000 + (y+4)*40
+; gfx_linebase: A = Spectrum y -> ptr = $A000 + (y+4)*40 (X, Y kept)
 gfx_linebase:
         clc
         adc #4
-        sta t0
+; lbase: A = Oric line (with C = bit 8) -> ptr
+lbase:  sta t0
         lda #0
         rol
         sta t1
@@ -478,142 +464,92 @@ gfx_linebase:
         sta ptr+1
         rts
 
-; buffer address of (X,Y): ptr hi / Y = lo of $6400 + y*32 + x>>3
-; out: ptr+1 = hi, A = lo
-bufaddr:
-        tya
-        sta t0
-        lda #0
-        sta t1
-        lda t0
-        asl
-        rol t1
-        asl
-        rol t1
-        asl
-        rol t1
-        asl
-        rol t1
-        asl
-        rol t1
-        sta t0
-        txa
-        lsr
-        lsr
-        lsr
-        clc
-        adc t0
-        sta t0
-        lda t1
-        adc #$64
-        sta ptr+1
-        lda t0
-        rts
-
-; addrmask (SA672): X=x, Y=y -> ptr/Y(index)/msk set up for the current
-; target, A684 = mask.  (Does not store A685.)
-addrmask:
-        lda ZV_A6D7
-        beq addrmask__buf
-        tya
-        jsr gfx_linebase
-        txa
+; xcr: A = Spectrum x -> A = Oric column of pixel x+6, t3 = offset 0..5
+; (X kept, Y destroyed)
+xcr:    pha
         lsr
         tay
+        lda divtab,y
+        and #3
+        asl
+        sta t3
+        pla
+        and #1
+        ora t3
+        sta t3
         lda divtab,y
         lsr
         lsr
         clc
         adc #1
-        sta t2                  ; column
-        lda divtab,y
-        and #3
-        asl
-        sta t3
-        txa
-        and #1
-        ora t3
-        tay
-        lda omask,y
-        sta msk
-        sta ZV_A684
-        ldy t2
         rts
-addrmask__buf:   jsr bufaddr
+
+; addrmask (SA672): X=x, Y=y -> ptr/Y(index)/msk for the current target,
+; A684 = mask.  (Does not store A685.)
+addrmask:
+        lda ZV_A6D7
+        beq :+
+        tya
+        jsr gfx_linebase
+        txa
+        jsr xcr
         pha
+        ldy t3
+        lda omask,y
+        bne am_m
+:       tya                     ; buffer: $6400 + y*32 + x>>3
+        sta t0
         lda #0
         sta ptr
+        asl t0
+        rol
+        asl t0
+        rol
+        asl t0
+        rol
+        asl t0
+        rol
+        asl t0
+        rol
+        adc #$64
+        sta ptr+1
+        txa
+        lsr
+        lsr
+        lsr
+        ora t0
+        pha
         txa
         and #7
         tay
         lda bmask,y
-        sta msk
+am_m:   sta msk
         sta ZV_A684
         pla
         tay
-        rts
-
-; SA638: BC (zc=x, zb=y) -> HL, A = x&7 (buffer: Spectrum address, B=0).
-; Screen mode (Oric): HL = byte address, A = pixel offset 0..5.
-        ZPROC $A638
-        ldx zc
-        ldy zb
-        lda ZV_A6D7
-        bne addrmask__scr
-        jsr bufaddr
-        sta zl
-        lda ptr+1
-        sta zh
-        lda #0
-        sta zb
-        lda zc
-        and #7
-        rts
-addrmask__scr:   jsr addrmask
-        tya
-        clc
-        adc ptr
-        sta zl
-        lda ptr+1
-        adc #0
-        sta zh
-        ldx #5
-:       lda omask,x
-        cmp msk
-        beq :+
-        dex
-        bne :-
-:       txa
         rts
 
 ; SA62A moveto + point plot: X = x, Y = y
 moveto: stx ZV_A691
         sty ZV_A691+1
         jsr addrmask
-        sty pcol
-        lda ZV_A6D7
-        bne :+
-        sty ZV_A685
-        lda ptr+1
-        sta ZV_A685+1
-        jmp moveto__plot
-:       lda ptr
-        sta ZV_A685
-        lda ptr+1
-        sta ZV_A685+1
-moveto__plot:  lda ZV_A634
+        jsr stpos
+        lda ZV_A634
         ldx ZV_A634+1
         jsr selplot
         jmp (plotv)
 
 ; SA526 set text cursor: X = x, Y = y
+        ZPROC $A526             ; (BC = x, y)
+        ldx zc
+        ldy zb
 setpos: stx ZV_A691
         sty ZV_A691+1
         txa
         and #7
         sta ZV_A683
         lda ZV_A6D7
-        beq setpos__buf
+        beq :+
         tya
         jsr gfx_linebase
         lda ptr
@@ -622,68 +558,36 @@ setpos: stx ZV_A691
         sta ZV_A687+1
         txa
         and #$F8
-        lsr
-        tay
-        lda divtab,y
-        pha
-        and #3
-        asl
-        sta tr
-        pla
-        lsr
-        lsr
-        clc
-        adc #1
+        jsr xcr
         sta tcol
+        lda t3
+        sta tr
         rts
-setpos__buf:   jsr bufaddr
-        sta ZV_A687
+:       lda ZV_A684             ; (SA526 leaves the line mask alone)
+        pha
+        jsr addrmask
+        sty ZV_A687
         lda ptr+1
         sta ZV_A687+1
-        rts
-
-        ZPROC $A526             ; BC = (x, y)
-        ldx zc
-        ldy zb
-        jmp setpos
-
-; gfx_curback: move the text cursor back one character (x -= 8)
-gfx_curback:
-        lda ZV_A691
-        sec
-        sbc #8
-        sta ZV_A691
-        lda ZV_A6D7
-        beq gfx_curback__buf
-        lda tr
-        sec
-        sbc #2
-        bcs :+
-        adc #6
-        dec tcol
-:       sta tr
-        dec tcol
-        rts
-gfx_curback__buf:   dec ZV_A687
+        pla
+        sta ZV_A684
         rts
 
 ; ===========================================================================
-; Plot routines (Y = index, ptr, msk).  selplot: A = op lo, X = op hi.
+; selplot: A = op lo, X = op hi (A5C4 / A634 encoding) -> plotv.  Y kept.
 selplot:
-        sty selsy
-        ldy #0
+        sty t2
+        ldy #6
         cmp #$18
-        beq selplot__d
+        beq :+
+        ldy #2
         cpx #$A6
-        beq selplot__e
-        cpx #$AE
-        bne selplot__o
+        beq :+
         ldy #4
-        bne selplot__o
-selplot__e:     ldy #2
-        bne selplot__o
-selplot__d:     ldy #6
-selplot__o:     lda ZV_A6D7
+        cpx #$AE
+        beq :+
+        ldy #0
+:       lda ZV_A6D7
         beq :+
         tya
         ora #8
@@ -692,11 +596,9 @@ selplot__o:     lda ZV_A6D7
         sta plotv
         lda plottab+1,y
         sta plotv+1
-        ldy selsy
+        ldy t2
         rts
-selsy:  .byte 0
 
-plotv:  .word p_or_b
 plottab:.word p_or_b, p_er_b, p_xo_b, p_di_b
         .word p_or_s, p_er_s, p_xo_s, p_di_s
 
@@ -809,304 +711,151 @@ up_s:   lda ptr
 steptab:.word right_b, left_b, down_b, up_b
         .word right_s, left_s, down_s, up_s
 
-; load the current line position into ptr / Y / msk (and step vectors)
-ldpos:  jsr setvec
-        lda ZV_A684
-        sta msk
-        lda ZV_A6D7
-        bne ldpos__s
-        lda #0
-        sta ptr
-        lda ZV_A685+1
-        sta ptr+1
-        ldy ZV_A685
-        rts
-ldpos__s:     lda ZV_A685
-        sta ptr
-        lda ZV_A685+1
-        sta ptr+1
-        ldy pcol
-        rts
-setvec: ldx #0
-        lda ZV_A6D7
-        beq :+
-        ldx #8
-:       lda steptab,x
-        sta vright
-        lda steptab+1,x
-        sta vright+1
-        lda steptab+2,x
-        sta vleft
-        lda steptab+3,x
-        sta vleft+1
-        lda steptab+4,x
-        sta vdown
-        lda steptab+5,x
-        sta vdown+1
-        lda steptab+6,x
-        sta vup
-        lda steptab+7,x
-        sta vup+1
-        rts
+; store ptr / Y / msk as the current line position
 stpos:  lda msk
         sta ZV_A684
-        lda ZV_A6D7
-        bne stpos__s
-        sty ZV_A685
         lda ptr+1
         sta ZV_A685+1
+        lda ZV_A6D7
+        bne :+
+        sty ZV_A685
         rts
-stpos__s:     sty pcol
+:       sty pcol
         lda ptr
         sta ZV_A685
-        lda ptr+1
-        sta ZV_A685+1
         rts
-vright: .word 0
-vleft:  .word 0
-vdown:  .word 0
-vup:    .word 0
 
 ; ===========================================================================
-; SA55E relative line: dxv, dyv sign-magnitude
-line:   jsr ldpos
-        sty ly
-        lda ZV_A5C4
+; SA55E relative line: dxv, dxv+1 = dx, dy sign-magnitude
+line:   lda ZV_A684             ; current position -> ptr / Y / msk; moff
+        sta msk
+        lda ZV_A685+1
+        sta ptr+1
+        ldx #0
+        lda ZV_A6D7
+        bne :+
+        stx ptr
+        stx moff
+        ldy ZV_A685
+        jmp :++
+:       lda ZV_A685
+        sta ptr
+        ldy pcol
+        lda #8
+        sta moff
+:       sty ly
+        lda ZV_A5C4             ; plot routine (cached: op + target)
         ldx ZV_A5C4+1
-        jsr selplot             ; plotv (Y restored from t2)
+        cmp lk0
+        bne :+
+        cpx lk1
+        bne :+
+        ldy moff
+        cpy lk2
+        beq :++
+:       sta lk0
+        stx lk1
+        ldy moff
+        sty lk2
+        jsr selplot
         lda plotv
         sta l_plt+1
         lda plotv+1
         sta l_plt+2
-        ; x direction
+:        ldx moff                ; x: right / left
         lda dxv
         eor ZV_A693
-        tax
+        bpl :+
         and #$7F
-        sta t0                  ; adx
-        txa
-        bmi line__xl
-        lda t0
-        sta addx
-        lda vright
-        ldx vright+1
-        jmp line__xs
-line__xl:    lda #0
-        sec
-        sbc t0
-        sta addx
-        lda vleft
-        ldx vleft+1
-line__xs:    sta t2
-        stx t3                  ; xstep
-        lda dyv
+        sta amag
+        eor #$FF
+        clc
+        adc #1
+        sta addv
+        inx
+        inx
+        bne :++
+:       sta amag
+        sta addv
+:       lda steptab,x
+        sta svl
+        lda steptab+1,x
+        sta svh
+        ldx moff                ; y: down / up
+        lda dxv+1
         eor ZV_A693+1
-        tax
+        bpl :+
         and #$7F
-        sta t1                  ; ady
-        txa
-        bmi line__yu
-        lda t1
-        sta addy
-        lda vdown
-        ldx vdown+1
-        jmp line__ys
-line__yu:    lda #0
-        sec
-        sbc t1
-        sta addy
-        lda vup
-        ldx vup+1
-line__ys:    ; A/X = ystep
-        pha
-        lda t1
-        cmp t0
-        pla
-        bcs line__ymaj
-        ; x major: major = xstep, minor = ystep
-        sta l_mnr+1
-        stx l_mnr+2
-        lda t2
+        sta amag+1
+        eor #$FF
+        clc
+        adc #1
+        sta addv+1
+        inx
+        inx
+        bne :++
+:       sta amag+1
+        sta addv+1
+:       lda steptab+4,x
+        sta svl+1
+        lda steptab+5,x
+        sta svh+1
+        ldx #0                  ; x major if |dy| < |dx|
+        ldy #1
+        lda amag+1
+        cmp amag
+        bcc :+
+        inx
+        dey
+:       lda svl,x
         sta l_mjr+1
-        lda t3
+        lda svh,x
         sta l_mjr+2
-        lda t0
+        lda amag,x
         sta major
-        lda t1
-        sta minor
-        jmp line__go
-line__ymaj:  sta l_mjr+1
-        stx l_mjr+2
-        lda t2
+        lda svl,y
         sta l_mnr+1
-        lda t3
+        lda svh,y
         sta l_mnr+2
-        lda t1
-        sta major
-        lda t0
+        lda amag,y
         sta minor
-line__go:    lda major
+        lda major
         sta cnt_l
         lsr
         sta err
         ldy ly
-line__loop:  lda err
+line__loop:
+        lda err
         clc
         adc minor
         bcs line__take
         cmp major
         bcc line__no
-line__take:  sbc major
+line__take:
+        sbc major
         sta err
 l_mnr = *
-       jsr $FFFF
+        jsr $FFFF
         jmp line__maj
-line__no:    sta err
+line__no:
+        sta err
 line__maj:
 l_mjr = *
-       jsr $FFFF
+        jsr $FFFF
 l_plt = *
-       jsr $FFFF
+        jsr $FFFF
         dec cnt_l
         bne line__loop
         jsr stpos
-        lda ZV_A691
+        ldx #1
+:       lda ZV_A691,x
         clc
-        adc addx
-        sta ZV_A691
-        lda ZV_A691+1
-        clc
-        adc addy
-        sta ZV_A691+1
+        adc addv,x
+        sta ZV_A691,x
+        dex
+        bpl :-
         rts
-cnt_l:  .byte 0
-ly:     .byte 0
 
-; ===========================================================================
-; SA721 flood fill from ptr/Y/msk (always OR).  Pixel-wise version of the
-; original scanline fill (same result: the 4-connected clear region, with
-; the original's "seed on a set pixel fills the run to its left" quirk).
-; Screen mode: attribute bytes, column 0 and columns >= 40 are boundaries.
-fill:   lda ZV_A6D7
-        beq :+
-        jmp fill_s
-:       sty t2
-        jsr setvec
-        lda vright
-        sta f_r1+1
-        sta f_r2+1
-        lda vright+1
-        sta f_r1+2
-        sta f_r2+2
-        lda vleft
-        sta f_l1+1
-        lda vleft+1
-        sta f_l1+2
-        lda vdown
-        sta f_dn+1
-        lda vdown+1
-        sta f_dn+2
-        lda vup
-        sta f_up+1
-        lda vup+1
-        sta f_up+2
-        lda #0
-        sta fsp
-        ldy t2
-        jsr fpush
-        ; position was set by addrmask: ptr / t2 / msk
-fill__pop:   ldx fsp
-        bne :+
-        rts
-:       dex
-        stx fsp
-        lda fs_pl,x
-        sta ptr
-        lda fs_ph,x
-        sta ptr+1
-        lda fs_m,x
-        sta msk
-        ldy fs_y,x
-        ; scan left to the first set pixel
-fill__lft:
-f_l1 = *
-       jsr $FFFF
-        jsr ftest
-        beq fill__lft
-        lda ptr
-        sta fl_p
-        lda ptr+1
-        sta fl_p+1
-        sty fl_y
-        lda msk
-        sta fl_m
-        lda #0
-        sta fcnt
-fill__rgt:
-f_r1 = *
-       jsr $FFFF
-        jsr ftest
-        bne fill__rend
-        lda (ptr),y
-        ora msk
-        sta (ptr),y
-        inc fcnt
-        jmp fill__rgt
-fill__rend:  lda fcnt
-        beq fill__pop
-        jsr frest
-f_dn = *
-       jsr $FFFF
-        jsr fscan
-        jsr frest
-f_up = *
-       jsr $FFFF
-        jsr fscan
-        jmp fill__pop
-
-frest:  lda fl_p
-        sta ptr
-        lda fl_p+1
-        sta ptr+1
-        ldy fl_y
-        lda fl_m
-        sta msk
-        rts
-; SA787: scan fcnt pixels right of the span start, push run starts
-fscan:  lda fcnt
-        sta fb
-        lda #1
-        sta fd
-fscan__l:
-f_r2 = *
-       jsr $FFFF
-        jsr ftest
-        beq fscan__clr
-        lda #1
-        sta fd
-        bne fscan__n
-fscan__clr:   lda fd
-        beq fscan__n
-        jsr fpush
-        lda #0
-        sta fd
-fscan__n:     dec fb
-        bne fscan__l
-        rts
-; ftest: Z clear (A<>0) if the pixel is set or a boundary
-ftest:  lda ZV_A6D7
-        beq ftest__b
-        cpy #40
-        bcs ftest__bd
-        lda (ptr),y
-        asl
-        bpl ftest__bd
-        lda (ptr),y
-ftest__b:     lda (ptr),y
-        and msk
-        rts
-ftest__bd:    lda #1
-        rts
 fpush:  ldx fsp
         cpx #FSTK
         bcs :+
@@ -1154,33 +903,53 @@ printc__c:     inc tp
         bpl printc__c
         rts
 
-; gfx_print: print the 0-terminated string at (X lo, Y hi) as chars/tokens
-gfx_print:
-        stx tp
-        sty tp+1
-gfx_print__l:     ldy #0
-        lda (tp),y
-        beq gfx_print__e
-        lda tp
-        pha
-        lda tp+1
-        pha
-        lda (tp),y
-        jsr printc
-        pla
-        sta tp+1
-        pla
-        sta tp
-        inc tp
-        bne gfx_print__l
-        inc tp+1
-        bne gfx_print__l
-gfx_print__e:     rts
-
-; LA6B5 glyph A
+; LA6B5 glyph A.  ROM font glyphs come from the HIRES charset at $9900
+; (6-bit copy, shifted back left) except the few that use pixel columns 0/7
+; (T_FEXC); custom font from T_AA2F.
 gfx_glyph:
         sta gch
-        sta fp
+        lda ZV_A6D7             ; screen mode, y >= 176: text rows
+        beq :+
+        lda ZV_A691+1
+        cmp #176
+        bcc :+
+        jmp gtext
+:       lda gch
+        ldx #$EA                ; nop: no shift
+        ldy ZV_A6BC+1
+        cpy #$3C
+        bne g_cus
+        cmp #32                 ; 32-83 (space, digits, A-S): never exceptions
+        bcc :+
+        cmp #84
+        bcc g_rom
+:       ldy #5
+:       cmp T_FEXCC,y
+        beq g_exc
+        dey
+        bpl :-
+g_rom:  lda fontok
+        bne :+
+        jsr fontinit
+:       lda #<CHARSET
+        ldy #>CHARSET
+        ldx #$0A                ; asl: charset rows are pixel columns 1-6
+        bne g_b
+g_exc:  lda #<T_FEXC
+        sta t0
+        lda #>T_FEXC
+        sta t1
+        tya
+        jmp g_b2
+g_cus:  lda #<T_AA2F
+        ldy #>T_AA2F
+g_b:    sta t0
+        sty t1
+        lda gch
+g_b2:   stx gal_sh
+        stx gb_sh
+        stx gs_sh
+        sta fp                  ; fp = base + 8 * index
         lda #0
         sta fp+1
         asl fp
@@ -1189,132 +958,104 @@ gfx_glyph:
         rol fp+1
         asl fp
         rol fp+1
-        lda ZV_A6BC+1
-        cmp #$3C
-        bne gfx_glyph__cus
         lda fp
         clc
-        adc #<(T_ROMFONT-256)
+        adc t0
         sta fp
         lda fp+1
-        adc #>(T_ROMFONT-256)
+        adc t1
         sta fp+1
-        jmp gfx_glyph__f
-gfx_glyph__cus:   lda fp
-        clc
-        adc #<T_AA2F
-        sta fp
-        lda fp+1
-        adc #>T_AA2F
-        sta fp+1
-gfx_glyph__f:     lda ZV_A691
+        lda ZV_A691
         clc
         adc #8
         sta ZV_A691
-        ; glyph op
+        ; glyph op: gopm 0 overwrite / 1 or / 2 xor
         lda ZV_A6E0
-        ldx #$24                ; bit zp: overwrite
+        ldx #0
+        ldy #$24                ; bit zp: overwrite
         cmp #$B6
         bne :+
-        ldx #$11                ; ora (zp),y
+        inx
+        ldy #$11                ; ora (zp),y
 :       cmp #$AE
         bne :+
-        ldx #$51                ; eor (zp),y
-:       stx g_op
-        stx g_op2
-        lda ZV_A6D7
-        bne gscr
-        ; ---- buffer
+        ldx #2
+        ldy #$51                ; eor (zp),y
+:       stx gopm
+        sty g_op
         lda #0
-        sta ptr
+        sta gry
+        lda ZV_A6D7
+        beq :+
+        jmp gscr
+        ; ---- buffer: the original's byte writes
+:       sta ptr
         lda ZV_A687+1
         sta ptr+1
         ldy ZV_A687
         inc ZV_A687
-        lda #8
-        sta cnt_g
+gb_row: sty t2
+        ldy gry
+        lda (fp),y
+gb_sh = *
+        asl
+        ldy t2
         ldx ZV_A683
-        bne gfx_glyph__un
-gfx_glyph__al:    sty t2
-        ldy #0
-        lda (fp),y
-        ldy t2
-g_op = *
-       ora (ptr),y
-        sta (ptr),y
-        jsr g_nextfp
-        tya
-        clc
-        adc #32
-        tay
-        bcc :+
-        inc ptr+1
-:       dec cnt_g
-        bne gfx_glyph__al
-        rts
-gfx_glyph__un:    sty t2
-        jsr g_split
-        ldy t2
+        bne gb_un
+        jsr gb_op
+        jmp gb_nx
+gb_un:  jsr gsplit
         lda gv
-        jsr g_op2x
-        iny
+        jsr gb_op
+        iny                     ; (L only, like inc l)
         lda gl
-        jsr g_op2x
+        jsr gb_op
         dey
-        jsr g_nextfp
-        tya
+gb_nx:  tya
         clc
         adc #32
         tay
         bcc :+
         inc ptr+1
-:       dec cnt_g
-        bne gfx_glyph__un
+:       inc gry
+        lda gry
+        cmp #8
+        bne gb_row
         rts
-g_op2x:
-g_op2:  ora (ptr),y
-        sta (ptr),y
-        rts
-cnt_g:  .byte 0
-gch:    .byte 0
-g_nextfp:
-        inc fp
-        bne :+
-        inc fp+1
-:       rts
-; g_split: gv = row >> bit, gl = row << (8-bit)  (X = bit, kept)
-g_split:ldy #0
-        lda (fp),y
-        sta gv
-        sty gl
-        txa
-        pha
+; gsplit: A = glyph row -> gv = A >> (x&7), gl = A << (8 - x&7)
+gsplit: sta gv
+        lda #0
+        sta gl
+        ldx ZV_A683
 :       lsr gv
         ror gl
         dex
         bne :-
-        pla
-        tax
+        rts
+gb_op:
+g_op = *
+        ora (ptr),y
+        sta (ptr),y
         rts
 
         ; ---- screen
-gscr:   lda ZV_A691+1
-        cmp #176
-        bcc gscr_h
-        ; status lines -> Oric text rows (docs/PORTING.md section 5)
+gtext:  lda ZV_A691              ; status lines -> Oric text rows
+        tax                     ; (docs/PORTING.md section 5)
+        clc
+        adc #8
+        sta ZV_A691
+        lda ZV_A691+1
         cmp #192
         bcs gscr_x
-        ldx #<TEXTROW0
-        ldy #>TEXTROW0
         cmp #184
+        lda #<TEXTROW0
+        ldy #>TEXTROW0
         bcc :+
-        ldx #<TEXTROW1
+        lda #<TEXTROW1
         ldy #>TEXTROW1
-:       stx ptr
+:       sta ptr
         sty ptr+1
-        lda ZV_A691
-        sec
-        sbc #8
+        txa
         lsr
         lsr
         lsr
@@ -1331,19 +1072,11 @@ gscr:   lda ZV_A691+1
         bcc gscr_x
         sta (ptr),y
 gscr_x: rts
+gscr:
 gscr_h: lda ZV_A687
         sta ptr
         lda ZV_A687+1
         sta ptr+1
-        lda ZV_A6E0
-        ldx #0
-        cmp #$B6
-        bne :+
-        ldx #1
-:       cmp #$AE
-        bne :+
-        ldx #2
-:       stx gopm
         lda tcol
         sta t2
         lda tr
@@ -1357,43 +1090,48 @@ gscr_h: lda ZV_A687
         sbc #6
         inc tcol
 :       sta tr
-        lda #8
-        sta cnt_g
-        lda ZV_A683
-        bne gscr__row
-        jmp gal                 ; aligned: fast path
-gscr__row:   ldx ZV_A683
-        bne gscr__u
-        ldy #0
+        ldx ZV_A683
+        beq gal
+        ; unaligned: two Spectrum bytes per row (glyph >> bit, glyph << 8-bit)
+gs_l:   ldy gry
         lda (fp),y
-        ldx t3
-        ldy t2
-        jsr sbyte
-        jmp gscr__nx
-gscr__u:     jsr g_split
-        lda gl
-        pha
+gs_sh = *
+        asl
+        jsr gsplit
+        ldy gry
         lda gv
-        ldx t3
-        ldy t2
-        jsr sbyte
-        ldy tcol
-        ldx tr
-        pla
-        jsr sbyte
-gscr__nx:    jsr g_nextfp
+        sta gbufh,y
+        lda gl
+        sta gbufl,y
+        inc gry
+        lda gry
+        cmp #8
+        bne gs_l
+        lda #$EA
+        sta gal_sh
         lda ptr
-        clc
-        adc #40
+        pha
+        lda ptr+1
+        pha
+        lda #<gbufh
+        sta fp
+        lda #>gbufh
+        sta fp+1
+        jsr gal
+        pla
+        sta ptr+1
+        pla
         sta ptr
-        bcc :+
-        inc ptr+1
-:       dec cnt_g
-        bne gscr__row
-        rts
-
-; gal: aligned glyph (x & 7 = 0) on the screen: 8 rows, column t2, offset
-; t3 (0,2,4), op gopm.  Per glyph: splitter, masks and the op opcode.
+        lda tcol
+        sta t2
+        lda tr
+        sta t3
+        lda #<gbufl
+        sta fp
+        lda #>gbufl
+        sta fp+1
+; gal: 8 aligned Spectrum bytes (rows of (fp)) at column t2, offset t3
+; (0,2,4) on the screen, op gopm
 gal:    ldx t3
         lda galtab,x
         sta gal_j+1
@@ -1414,10 +1152,12 @@ gal:    ldx t3
         ldy #$45                ; eor zp
 :       sty gal_o0
         sty gal_o1
-        lda #0
-        sta gry
-gal_r:  ldy gry
+        ldx #0                  ; X = row
+gal_r:  txa
+        tay
         lda (fp),y
+gal_sh = *
+        asl
 gal_j:  jmp $FFFF
 gal_0:  sta gv                  ; r = 0: 6 + 2 bits
         lsr
@@ -1478,9 +1218,8 @@ gal_n:  lda ptr
         sta ptr
         bcc :+
         inc ptr+1
-:       inc gry
-        lda gry
-        cmp #8
+:       inx
+        cpx #8
         bne gal_r
         rts
 galtab: .word gal_0, gal_2, gal_4
@@ -1488,83 +1227,49 @@ gnm0:   .byte $C0, 0, $F0, 0, $FC
 gnm1:   .byte $CF, 0, $C3, 0, $C0
 gm0:    .byte $FF
 gm1:    .byte $FF
-gry:    .byte 0
 
-; sbyte: one Spectrum byte A at Oric column Y, offset X (0,2,4) on line ptr
-sbyte:  sta gv
-        cpx #2
-        beq sbyte__r2
-        bcs sbyte__r4
-        lsr
-        lsr
-        sta sb0
-        lda gv
-        asl
-        asl
-        asl
-        asl
-        and #$30
-        sta sb1
-        lda #$3F
-        ldx #$30
-        bne sbyte__go
-sbyte__r2:    lsr
-        lsr
-        lsr
-        lsr
-        sta sb0
-        lda gv
-        asl
-        asl
-        and #$3C
-        sta sb1
-        lda #$0F
-        ldx #$3C
-        bne sbyte__go
-sbyte__r4:    rol
+; fontinit: unpack the 6-bit ROM font (T_FONT6) into the charset at $9900,
+; once
+fontinit:
+        lda fontok
+        bne fi_r
+        inc fontok
+        lda #<T_FONT6
+        sta lzs
+        lda #>T_FONT6
+        sta lzs+1
+        lda #<(CHARSET + 32*8)
+        sta lzd
+        lda #>(CHARSET + 32*8)
+        sta lzd+1
+        lda #$80
+        sta gbitb
+fi_o:   lda #1
+fi_b:   asl gbitb
+        bne :+
+        pha
+        ldy #0
+        lda (lzs),y
+        inc lzs
+        bne fi_n
+        inc lzs+1
+fi_n:   sec
         rol
-        rol
-        and #3
-        sta sb0
-        lda gv
+        sta gbitb
+        pla
+:       rol
+        cmp #$40
+        bcc fi_b
         and #$3F
-        sta sb1
-        lda #$03
-        ldx #$3F
-sbyte__go:    eor #$FF
-        sta t0                  ; ~m0
-        txa
-        eor #$FF
-        sta t1                  ; ~m1
-        lda sb0
-        ldx t0
-        jsr sput
-        iny
-        lda sb1
-        ldx t1
-; sput: A = bits, X = ~mask, at (ptr),Y
-sput:   cpy #40
-        bcs sput__r
-        sta gl
-        lda (ptr),y
-        asl
-        bpl sput__r
-        lda gopm
-        beq sput__ow
-        lsr
-        lda gl
-        bcs sput__or
-        eor (ptr),y
-        sta (ptr),y
-sput__r:     rts
-sput__or:    ora (ptr),y
-        sta (ptr),y
-        rts
-sput__ow:    txa
-        and (ptr),y
-        ora gl
-        sta (ptr),y
-        rts
+        ldy #0
+        sta (lzd),y
+        inc lzd
+        bne fi_o
+        inc lzd+1
+        lda lzd+1
+        cmp #>(CHARSET + $400)
+        bne fi_o
+fi_r:   rts
 
 ; ===========================================================================
 ; SA911 number printer: A = skip (0,6,..,24), HL = value, E = flags
@@ -1628,12 +1333,13 @@ divhi:  .byte >10000, >1000, >100, >10, >1
 
 ; ===========================================================================
 ; Oric colour helpers
-; attrtpl: A = Spectrum attribute -> c0v, c1v (0 = none), tmpl
+; attrtpl: A = Spectrum attribute -> kk (ink), pp (paper), c0v, c1v (0 =
+; none), tmpl (pixel byte bits 7-6)
 attrtpl:pha
         and #7
         tax
         lda zx2oric,x
-        sta t0                  ; ink K
+        sta kk
         pla
         lsr
         lsr
@@ -1641,110 +1347,120 @@ attrtpl:pha
         and #7
         tax
         lda zx2oric,x
-        sta t1                  ; paper P
-        lda #0
-        sta c1v
-        lda #$40
-        sta tmpl
-        lda t0
-        bne attrtpl__k
-        lda #7
+        sta pp
+        ldx #0
+        stx c1v
+        ldx #$40
+        stx tmpl
+        lda kk
+        bne :+
+        lda #$97                ; K black: inverse video, paper 7-P
         sec
-        sbc t1
-        ora #$90
+        sbc pp
         sta c0v
         lda #$C0
         sta tmpl
         rts
-attrtpl__k:     cmp #7
-        beq attrtpl__p
-        lda t1
-        bne attrtpl__kp
-        lda t0
-        sta c0v
+:       cmp #7
+        beq :++
+        ldx pp
+        bne :+
+        sta c0v                 ; black paper: column 0 = ink
         rts
-attrtpl__kp:    lda t0
-        sta c1v
-attrtpl__p:     lda t1
+:       sta c1v                 ; column 1 = ink
+:       lda pp
         ora #$10
         sta c0v
         rts
 
-; gfx_cls: whole screen to Spectrum attribute A (command 8F; also the
-; border variable DA4C2 = (A>>3)&7).  Lines 0-3 and 196-199 stay black.
-gfx_cls:pha
-        lsr
-        lsr
-        lsr
-        jsr Z_A903
-        pla
+; arng: A = attribute, X = first Oric line, Y = count; km = 0 (clear the
+; pixels) or $3F (keep them, and keep attribute bytes)
+gfx_arng = arng
+gfx_km = km
+arng:   sty t2
+        stx t3
         jsr attrtpl
-        lda #<$A000
-        sta ptr
-        lda #>$A000
-        sta ptr+1
-        ldx #0
-gfx_cls__ln:    cpx #4
-        bcc gfx_cls__blk
-        cpx #196
-        bcs gfx_cls__blk
+ar_l:   lda t3
+        clc
+        jsr lbase
         ldy #0
         lda c0v
         sta (ptr),y
         iny
         lda c1v
-        bne :+
-        lda tmpl
-:       sta (ptr),y
-        iny
-        lda tmpl
-:       sta (ptr),y
-        iny
-        cpy #40
-        bne :-
-        beq gfx_cls__nx
-gfx_cls__blk:   ldy #0
-        lda #$10
-        sta (ptr),y
-        iny
-        lda #$40
+        bne ar_w
+        bit km
+        bvs ar_px
+        lda tmpl                ; clear: plain fill
 :       sta (ptr),y
         iny
         cpy #40
         bne :-
-gfx_cls__nx:    lda ptr
-        clc
-        adc #40
-        sta ptr
-        bcc :+
-        inc ptr+1
-:       inx
-        cpx #200
-        bne gfx_cls__ln
-        ; the text rows (Spectrum rows 22-23): ink K, paper P, blank
-        ldx #118
-        lda #$20
-:       sta TEXTROW0,x
-        dex
-        bpl :-
-        lda t1
+        beq ar_nl
+ar_px:  lda (ptr),y
+        bit km
+        bvc ar_s                ; (clear)
+        asl
+        bmi :+
+        cpy #1                  ; column 1 attribute -> empty pixels
+        bne ar_n
+        lda #0
+:       lsr
+ar_s:   and km
+        ora tmpl
+ar_w:   sta (ptr),y
+ar_n:   iny
+        cpy #40
+        bne ar_px
+ar_nl:  inc t3
+        dec t2
+        bne ar_l
+        rts
+
+; gfx_cls: whole screen to Spectrum attribute A (command 8F; also the
+; border variable DA4C2 = (A>>3)&7).  Lines 0-3 and 196-199 black; the text
+; rows ink K / paper P, blank.
+gfx_cls:pha
+        lsr
+        lsr
+        lsr
+        jsr Z_A903
+        lda #0
+        sta km
+        tax
+        ldy #4
+        jsr arng                ; lines 0-3 (attribute 0: black)
+        lda #0
+        ldx #196
+        ldy #4
+        jsr arng
+        pla
+        ldx #4
+        ldy #192
+        jsr arng
+        jsr trclr
+        lda pp
         ora #$10
         sta TEXTROW0+1
         sta TEXTROW0+41
         sta TEXTROW0+81
-        lda t0
+        lda kk
         sta TEXTROW0
         sta TEXTROW0+40
         sta TEXTROW0+80
         rts
 
-; gfx_attr_rows: A = attribute, X = first char row, Y = number of rows
+; gfx_attr_rows: A = attribute, X = first char row, Y = number of rows.
+; Rewrites columns 0/1 and bit 7 of the pixel bytes (pixels kept).
 gfx_attr_rows:
         pha
+        lda #$3F
+        sta km
         txa
         asl
         asl
         asl
+        adc #4
         tax
         tya
         asl
@@ -1752,45 +1468,7 @@ gfx_attr_rows:
         asl
         tay
         pla
-; gfx_attr_lines: A = attribute, X = first Spectrum pixel row, Y = count.
-; Rewrites column 0/1 and bit 7 of the pixel bytes (pixels kept).
-gfx_attr_lines:
-        sty t3
-        stx t2
-        jsr attrtpl
-gfx_attr_lines__ln:    lda t3
-        beq gfx_attr_lines__e
-        lda t2
-        jsr gfx_linebase
-        ldy #0
-        lda c0v
-        sta (ptr),y
-        iny
-        lda c1v
-        bne gfx_attr_lines__w1
-        lda (ptr),y
-        asl
-        bmi :+
-        lda #0                  ; was an attribute: becomes empty pixels
-:       lsr
-        and #$3F
-        ora tmpl
-gfx_attr_lines__w1:    sta (ptr),y
-        iny
-gfx_attr_lines__px:    lda (ptr),y
-        asl
-        bpl :+                  ; attribute: keep
-        lsr
-        and #$3F
-        ora tmpl
-        sta (ptr),y
-:       iny
-        cpy #40
-        bne gfx_attr_lines__px
-        inc t2
-        dec t3
-        bne gfx_attr_lines__ln
-gfx_attr_lines__e:     rts
+        jmp arng
 
 ; gfx_recolour: A = attribute, X = first char column, Y = last char column,
 ; gfx_rc_row / gfx_rc_n = Spectrum pixel rows.  Puts serial attributes just
@@ -1798,95 +1476,71 @@ gfx_attr_lines__e:     rts
 ; base colours (read from columns 0/1), and sets the inverse bit of the
 ; pixel bytes inside.  Each attribute column blanks 6 pixels.
 gfx_recolour:
-        sta rc_a
-        sty rc_ce
+        pha
+        tya
+        asl
+        asl
+        asl
+        ora #7
+        jsr xcr
+        sta rc_ce
         txa
         asl
         asl
-        tay                     ; (8*X)>>1
-        lda divtab,y
-        lsr
-        lsr
-        clc
-        adc #1
+        asl
+        jsr xcr
         sta rc_cs
-        lda rc_ce
-        asl
-        asl
-        asl                     ; 8*Y
-        ora #7
-        lsr
-        tay
-        lda divtab,y
-        lsr
-        lsr
-        clc
-        adc #1
-        sta rc_ce
-        lda rc_a                ; area colours
-        and #7
-        tax
-        lda zx2oric,x
-        sta t0
-        lda rc_a
-        lsr
-        lsr
-        lsr
-        and #7
-        tax
-        lda zx2oric,x
-        ldx t0
-        bne gfx_recolour__an
-        eor #7
+        pla
+        jsr attrtpl
+        ldx #0                  ; area: inverse (black ink) or ink K
+        lda kk
+        bne :+
+        lda #7
+        sec
+        sbc pp
         sta rc_pa
         lda #7
-        sta rc_ia
-        lda #$80
-        sta rc_va
-        bne gfx_recolour__rows
-gfx_recolour__an:    sta rc_pa
-        stx rc_ia
-        lda #0
-        sta rc_va
-gfx_recolour__rows:  lda gfx_rc_row
+        ldx #$80
+        bne :++
+:       ldy pp
+        sty rc_pa
+:       sta rc_ia
+        stx rc_va
+        lda gfx_rc_row
         sta t2
         lda gfx_rc_n
-        sta t3
-gfx_recolour__ln:    lda t3
-        bne :+
-        rts
-:       lda t2
+        sta gry
+rc_ln:  lda t2
         jsr gfx_linebase
-        ; base colours of the line
-        ldy #0
+        ldy #0                  ; base colours of the line
         lda (ptr),y
         tax
         and #$80
         sta rc_vb
         txa
-        and #$10
-        beq gfx_recolour__inkat
-        txa
         and #7
-        sta rc_pb
+        sta rc_ib
+        ldy #0
+        sty rc_pb
+        txa
+        and #$10
+        beq rc_b                ; column 0 = ink: paper black
+        stx rc_pb               ; (bits 3-7 masked below)
         lda #7
         sta rc_ib
         lda rc_vb
-        bne gfx_recolour__base
+        bne rc_b
         iny
         lda (ptr),y
         cmp #8
-        bcs gfx_recolour__base
+        bcs rc_b
         sta rc_ib
-        bcc gfx_recolour__base
-gfx_recolour__inkat: lda #0
-        sta rc_pb
-        txa
+rc_b:   lda rc_pb
         and #7
-        sta rc_ib
-gfx_recolour__base:  lda rc_ia
+        sta rc_pb
+        lda rc_ia
         cmp rc_ib
-        beq gfx_recolour__noink
+        beq :+
         ora rc_vb
         ldx rc_cs
         dex
@@ -1898,7 +1552,7 @@ gfx_recolour__base:  lda rc_ia
         inx
         inx
         jsr rcput
-gfx_recolour__noink: lda rc_pa
+:       lda rc_pa
         ora #$10
         ora rc_va
         ldx rc_cs
@@ -1911,8 +1565,8 @@ gfx_recolour__noink: lda rc_pa
         inx
         jsr rcput
         ldy rc_cs
-gfx_recolour__px:    cpy #40
-        bcs gfx_recolour__nl
+:       cpy #40
+        bcs :++
         lda (ptr),y
         asl
         bpl :+
@@ -1921,10 +1575,12 @@ gfx_recolour__px:    cpy #40
         sta (ptr),y
 :       cpy rc_ce
         iny
-        bcc gfx_recolour__px
-gfx_recolour__nl:    inc t2
-        dec t3
-        jmp gfx_recolour__ln
+        bcc :--
+:       inc t2
+        dec gry
+        beq :+
+        jmp rc_ln
+:       rts
 rcput:  cpx #40
         bcs :+
         cpx #0
@@ -1936,25 +1592,55 @@ rcput:  cpx #40
         sta (ptr),y
 :       rts
 
-; gfx_lz: unpack the LZ data at (lzs) to (lzd)
-gfx_lz: ldy #0
-gfx_lz__tok:   jsr gfx_lz__get
-        beq gfx_lz__e
-        bmi gfx_lz__m
-        tax
-gfx_lz__lit:   jsr gfx_lz__get
-        sta (lzd),y
-        jsr gfx_lz__inc
+; gfx_textinit: install the ROM font in the HIRES charset ($9900: chars
+; 32-127, pixel columns 1-6); text rows: ink yellow / green, blank.
+gfx_textinit:
+        jsr fontinit
+        jsr trclr
+        lda #3
+        sta TEXTROW0
+        lda #2
+        sta TEXTROW1
+        rts
+trclr:  ldx #118                ; ($BFDF, the last byte, is the video mode)
+        lda #$20
+:       sta TEXTROW0,x
         dex
-        bne gfx_lz__lit
-        beq gfx_lz__tok
-gfx_lz__m:     and #$7F
-        clc
-        adc #3
+        bpl :-
+        rts
+
+; gfx_lz: unpack the LZ data at (lzs) to (lzd) (tools/gen_gfx.py lz2:
+; 00llllll literals, 01llllll d8 short copy, 1lllllll d16 copy, 0 end)
+gfx_lz: ldy #0
+lz_t:   jsr lz_g
+        beq lz_r
+        cmp #$40
+        bcs lz_m
+        tax                     ; literals
+:       jsr lz_g
+        jsr lz_p
+        dex
+        bne :-
+        beq lz_t
+lz_m:   cmp #$80
+        bcs :+
+        and #$3F                ; short: length l+2, distance d8+1
+        adc #2
         tax
-        jsr gfx_lz__get
+        jsr lz_g
+        clc
+        eor #$FF                ; lzc = lzd - d8 - 1
+        adc lzd
+        sta lzc
+        lda lzd+1
+        sbc #0
+        bcs lz_c
+:       and #$7F                ; long: length l+3, distance d16
+        adc #2                  ; (C=1)
+        tax
+        jsr lz_g
         sta t0
-        jsr gfx_lz__get
+        jsr lz_g
         sta t1
         lda lzd
         sec
@@ -1962,24 +1648,23 @@ gfx_lz__m:     and #$7F
         sta lzc
         lda lzd+1
         sbc t1
-        sta lzc+1
-gfx_lz__cp:    lda (lzc),y
-        sta (lzd),y
+lz_c:   sta lzc+1
+:       lda (lzc),y
+        jsr lz_p
         inc lzc
         bne :+
         inc lzc+1
-:       jsr gfx_lz__inc
-        dex
-        bne gfx_lz__cp
-        beq gfx_lz__tok
-gfx_lz__e:     rts
-gfx_lz__get:   lda (lzs),y
+:       dex
+        bne :--
+        beq lz_t
+lz_g:   lda (lzs),y
         inc lzs
-        bne :+
+        bne lz_r
         inc lzs+1
-:       ora #0
+lz_r:   ora #0
         rts
-gfx_lz__inc:   inc lzd
+lz_p:   sta (lzd),y
+        inc lzd
         bne :+
         inc lzd+1
 :       rts
@@ -1996,118 +1681,100 @@ gfx_lz__inc:   inc lzd
         ldx zc
         ldy #SND_BADKEY
         cmp #$30
-        beq gfx_lz__fx
+        beq :+
         ldy #SND_TAPEERR
         cmp #$F0
-        beq gfx_lz__fx
+        beq :+
         ldy #SND_TICK
-gfx_lz__fx:    tya
+:       tya
         jmp snd_fx
-; A977: inline N, K, K x (C, B).  A97C: inline K, K x (C, B), N = $20
+; A977: inline N, K, K x (C, B).  A97C: inline K, K x (C, B), N = $20.
+; N=6: engine blip (C), N=4: penalty chirp, K=3: key blip, else beep.
         ZPROC $A977
         pla
-        sta strmb
+        sta strm
         pla
-        sta strmb+1
-        jsr getbb
-        jmp a97x
+        sta strm+1
+        jsr getb                ; (skip)
+        jsr getb                ; N
+        jmp :+
         ZPROC $A97C
         pla
-        sta strmb
+        sta strm
         pla
-        sta strmb+1
+        sta strm+1
+        jsr getb                ; (skip)
         lda #$20
-a97x:   sta ZV_A969
-        jsr getbb
-        sta t2                  ; K
-        jsr getbb               ; first C
-        sta t3
-        ; skip the rest of the pairs
-        lda t2
+:       sta ZV_A969
+        jsr getb                ; K
+        sta t2
         asl
         tax
-        dex
-:       dex
+        jsr getb                ; first C
+        sta t3
+:       dex                     ; skip the other 2K-1 bytes
         beq :+
-        jsr getbb
+        jsr getb
         jmp :-
-:       jsr getbb               ; (the last byte)
-        ; choose the effect
+:       ldx t3
         lda ZV_A969
+        ldy #SND_REV
         cmp #6
-        bne :+
-        lda #SND_REV
-        ldx t3
-        bne a97x__go
-:       cmp #4
-        bne :+
-        lda #SND_CHIRP
-        bne a97x__go
-:       lda t2
+        beq :+
+        ldy #SND_CHIRP
+        cmp #4
+        beq :+
+        ldy #SND_KEYBLIP
+        lda t2
         cmp #3
-        bne :+
-        lda #SND_KEYBLIP
-        bne a97x__go
-:       lda #SND_BEEP
-a97x__go:    jsr snd_fx
-        lda strmb
-        clc
-        adc #1
-        sta strmb
-        bcc :+
-        inc strmb+1
-:       jmp (strmb)
-getbb:  inc strmb
-        bne :+
-        inc strmb+1
-:       ldy #0
-        lda (strmb),y
-        rts
-
-; gfx_textinit: Spectrum ROM font -> HIRES character set at $9800 (chars
-; 32-127, pixel columns 1-6), text rows: ink yellow / green / black, blank.
-gfx_textinit:
-        lda #<T_ROMFONT
-        sta lzs
-        lda #>T_ROMFONT
-        sta lzs+1
-        lda #<($9800 + 32*8)
-        sta lzd
-        lda #>($9800 + 32*8)
-        sta lzd+1
-        ldx #3                  ; 768 bytes
-        ldy #0
-:       lda (lzs),y
-        lsr
-        and #$3F
-        sta (lzd),y
-        iny
-        bne :-
-        inc lzs+1
-        inc lzd+1
-        dex
-        bne :-
-        ldx #118                ; ($BFDF, the last byte, is the video mode)
-        lda #$20
-:       sta TEXTROW0,x
-        dex
-        bpl :-
-        lda #3
-        sta TEXTROW0
-        lda #2
-        sta TEXTROW1
-        rts
+        beq :+
+        ldy #SND_BEEP
+:       tya
+        jsr snd_fx
+        jmp (strm)
 
 ; ===========================================================================
-; fill_s: screen-mode flood fill from ptr (line base) / Y (column) / msk.
-; Same result as the pixel-wise fill (4-connected clear region, the seed
-; quirk), with whole-byte shortcuts like the original's: empty bytes are
-; skipped / filled 6 pixels at a time.  Attribute bytes and columns 0 and
-; >= 40 are boundaries; rows outside HIRES lines 4-179 are not entered.
+; SA721 flood fill (always OR) from ptr / Y / msk, both targets.
+; Same result as the original's scanline fill: the 4-connected clear region
+; (with its "seed on a set pixel fills the run to its left" quirk), with the
+; original's whole-byte shortcuts (8-pixel bytes in buffer mode, 6-pixel
+; bytes on the screen).  Buffer mode: no edges, L wraps inside its page
+; like the original.  Screen mode: attribute bytes, columns 0 and >= 40 are
+; boundaries and rows outside HIRES lines 4-179 are not entered.
 FS_TOP = $A000 + 4*40
 FS_BOT = $A000 + 180*40
-fill_s: cpy #40
+fill:   ldx #0                  ; patch the per-target constants
+        lda ZV_A6D7
+        beq :+
+        ldx #1
+        cpy #40                 ; screen: seed must be in a pixel byte
         bcs fs_ret
+        lda (ptr),y
+        and #$40
+        beq fs_ret
+:       lda fk_scr,x
+        sta fscr
+        lda fk_lim,x
+        sta fp_lim+1
+        lda fk_top,x
+        sta fp_top1+1
+        sta fp_top2+1
+        lda fk_full,x
+        sta fp_full+1
+        sta fp_fcmp+1
+        lda fk_w,x
+        sta fp_w1+1
+        sta fp_w3+1
+        lda fk_w1,x
+        sta fp_w2+1
+        lda fk_fbl,x
+        sta fbj0+1
+        sta fbj1+1
+        sta fbj2+1
+        lda fk_fbh,x
+        sta fbj0+2
+        sta fbj1+2
+        sta fbj2+2
         lda #0
         sta fsp
         jsr fpush
@@ -2125,27 +1792,21 @@ fs_ret: rts
         ldy fs_y,x
         ; ---- scan left to the first set pixel / boundary
 fs_l:   asl msk
+        bcs fs_lc               ; (buffer: $80 shifted out)
         lda msk
-        cmp #$40
+fp_lim: cmp #$40                ; (screen: $20 shifted to $40)
         bcc fs_lt
-        lda #1
+fs_lc:  lda #1
         sta msk
 fs_lb:  dey
-        cpy #40
+fbj0 = *
+        jsr fbyte_s
         bcs fs_lstop
-        lda (ptr),y
-        asl
-        bpl fs_lstop
-        and #$7E                ; (bits 5-0 << 1)
         beq fs_lb               ; empty byte: skip it
-        lsr
         and msk
         bne fs_lstop
         beq fs_l
 fs_lt:  lda (ptr),y
-        asl
-        bpl fs_lstop
-        lsr
         and msk
         beq fs_l
 fs_lstop:
@@ -2161,22 +1822,19 @@ fs_lstop:
         ; ---- fill right up to the next set pixel / boundary
 fs_r:   lsr msk
         bne fs_rt
-        lda #$20
+fp_top1:lda #$20
         sta msk
 fs_rb:  iny
-        cpy #40
+fbj1 = *
+        jsr fbyte_s
         bcs fs_rend
-        lda (ptr),y
-        asl
-        bpl fs_rend
-        and #$7E
         bne fs_rt
         lda (ptr),y             ; empty byte: fill it whole
-        ora #$3F
+fp_full:ora #$3F
         sta (ptr),y
         lda fcnt
         clc
-        adc #6
+fp_w1:  adc #6
         sta fcnt
         jmp fs_rb
 fs_rt:  lda (ptr),y
@@ -2190,9 +1848,17 @@ fs_rt:  lda (ptr),y
 fs_rend:lda fcnt
         bne :+
         jmp fs_pop
-:       ; ---- row below
-        jsr frest
-        lda ptr
+:       jsr frest               ; ---- row below
+        bit fscr
+        bmi fs_dn
+        tya
+        clc
+        adc #32
+        tay
+        bcc fs_dsc
+        inc ptr+1
+        bcs fs_dsc
+fs_dn:  lda ptr
         clc
         adc #40
         sta ptr
@@ -2200,14 +1866,23 @@ fs_rend:lda fcnt
         inc ptr+1
 :       lda ptr+1
         cmp #>FS_BOT
-        bcc :+
+        bcc fs_dsc
         bne fs_up
         lda ptr
         cmp #<FS_BOT
         bcs fs_up
-:       jsr fs_scan
-fs_up:  jsr frest
-        lda ptr
+fs_dsc: jsr fs_scan
+fs_up:  jsr frest               ; ---- row above
+        bit fscr
+        bmi fs_us
+        tya
+        sec
+        sbc #32
+        tay
+        bcs fs_usc
+        dec ptr+1
+        bcc fs_usc
+fs_us:  lda ptr
         sec
         sbc #40
         sta ptr
@@ -2216,31 +1891,72 @@ fs_up:  jsr frest
 :       lda ptr+1
         cmp #>FS_TOP
         bcc fs_nx
-        bne :+
+        bne fs_usc
         lda ptr
         cmp #<FS_TOP
         bcc fs_nx
-:       jsr fs_scan
+fs_usc: jsr fs_scan
 fs_nx:  jmp fs_pop
 
-; scan fcnt pixels right of the span start on this row, push run starts
+frest:  lda fl_p
+        sta ptr
+        lda fl_p+1
+        sta ptr+1
+        ldy fl_y
+        lda fl_m
+        sta msk
+        rts
+
+; fbyte: the byte at Y after a byte step: C=1 boundary (screen: column
+; >= 40 or attribute), else A = its pixel bits, Z = empty
+fbyte_b:lda (ptr),y
+        clc
+        rts
+fbyte_s:cpy #40
+        bcs fb_r
+        lda (ptr),y
+        asl
+        bpl fb_b
+        lsr
+        and #$3F
+        clc
+fb_r:   rts
+fb_b:   sec
+        rts
+
+; SA787: scan fcnt pixels right of the span start on this row, push the
+; first clear pixel of every run
 fs_scan:lda fcnt
         sta fb
         lda #1
         sta fd
-fsc_l:  lsr msk
-        bne fsc_t
-        lda #$20
-        sta msk
-fsc_b:  iny
+        bit fscr                ; screen: the start byte of this row may be
+        bpl fsc_l               ; an attribute: its pixels count as set
         cpy #40
         bcs fsc_ret
         lda (ptr),y
-        asl
-        bpl fsc_bound           ; attribute: 6 "set" pixels
-        and #$7E
+        and #$40
+        bne fsc_l
+:       lda msk
+        lsr
+        beq fsc_nb
+        sta msk
+        dec fb
+        bne :-
+        rts
+fsc_nb: lda #$20
+        sta msk
+        bne fsc_b
+fsc_l:  lsr msk
+        bne fsc_t
+fp_top2:lda #$20
+        sta msk
+fsc_b:  iny
+fbj2 = *
+        jsr fbyte_s
+        bcs fsc_bound           ; boundary byte: all "set"
         beq fsc_e
-        cmp #$7E
+fp_fcmp:cmp #$3F
         bne fsc_t
         lda fd                  ; full byte after a set pixel: skip
         beq fsc_t
@@ -2249,22 +1965,19 @@ fsc_e:  lda fd                  ; empty byte after a clear pixel: skip
         bne fsc_t
 fsc_skip:
         lda fb
-        cmp #7
+fp_w2:  cmp #7
         bcc fsc_ret
-        sbc #6
+fp_w3:  sbc #6
         sta fb
         jmp fsc_b
-fsc_bound:
+fsc_bound:                      ; (screen only)
         lda #1
         sta fd
         bne fsc_skip
 fsc_t:  lda (ptr),y
-        asl
-        bpl fsc_set
-        lsr
         and msk
         beq fsc_clr
-fsc_set:lda #1
+        lda #1
         sta fd
         bne fsc_n
 fsc_clr:lda fd
@@ -2275,3 +1988,11 @@ fsc_clr:lda fd
 fsc_n:  dec fb
         bne fsc_l
 fsc_ret:rts
+fk_scr: .byte 0, $80
+fk_fbl: .byte <fbyte_b, <fbyte_s
+fk_fbh: .byte >fbyte_b, >fbyte_s
+fk_lim: .byte $FF, $40
+fk_top: .byte $80, $20
+fk_full:.byte $FF, $3F
+fk_w:   .byte 8, 6
+fk_w1:  .byte 9, 7

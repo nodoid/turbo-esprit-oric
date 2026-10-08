@@ -155,8 +155,9 @@ def synth_streams(rng, n):
                         else:
                             items.append(1)
                             # (ROM font: 32-127 only; the original never prints
-                            #  ROM codes < 32, which would show ROM code bytes)
-                            s2.append(rng.randrange(0, 0x23) if custom else
+                            #  ROM codes < 32, which would show ROM code bytes;
+                            #  custom font: 11-22, the glyphs kept on the Oric)
+                            s2.append(rng.randrange(0x11, 0x23) if custom else
                                       rng.choice((rng.randrange(0x20, 0x80),
                                                   rng.randrange(0x81, 0x99))))
                     s2.append(0x12 if custom else 0x41)
@@ -168,6 +169,12 @@ def synth_streams(rng, n):
         s.append(0)
         out.append(bytes(s))
     return out
+
+
+def copy_subs(sim, m):
+    for lo, hi in G.USED_SUBS:
+        oa = sim.sym['L_%04X' % lo]
+        sim.mem[oa:oa + hi + 1 - lo] = m[lo:hi + 1]
 
 
 def test_buffer(sim):
@@ -200,10 +207,8 @@ def test_buffer(sim):
         e.run(0x9D80)
         # sim
         sim.mem[0x6400:0x8400] = DASHLIN if name[:3] != 'syn' else bytes(0x2000)
-        # sub-streams
-        oa = sim.sym['L_A0EB']
-        for a in range(0xA0EB, 0xA36F):
-            sim.mem[oa + a - 0xA0EB] = m[a]
+        # sub-streams (only the parts in the Oric data)
+        copy_subs(sim, m)
         sim.mem[sim.sym['ZV_A4C3']] = num & 0xFF
         sim.mem[sim.sym['ZV_A4C3'] + 1] = num >> 8
         run_stream(sim, st, rvals=rv)
@@ -215,8 +220,7 @@ def test_buffer(sim):
                 print('  %s: %d byte diffs %s, xy %02X,%02X vs %02X,%02X' % (
                     name, len(d), ' '.join('%04X:%02X/%02X' % (a, m[a], sim.mem[a]) for a in d[:8]),
                     e.x, e.y, sim.mem[sim.sym['ZV_A691']], sim.mem[sim.sym['ZV_A691'] + 1]))
-    oa = sim.sym['L_A0EB']
-    sim.mem[oa:oa + 0xA36F - 0xA0EB] = IMG[0xA0EB:0xA36F]     # undo the 8C->8E patch
+    copy_subs(sim, IMG)                       # undo the 8C->8E patch
     result('buffer mode streams vs model', bad == 0, '%d streams, %d bad' % (len(streams), bad))
 
 

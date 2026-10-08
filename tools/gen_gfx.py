@@ -706,7 +706,83 @@ def emit_bytes(out, vals, per=16):
         out.append('        .byte ' + ','.join('$%02X' % v for v in vals[i:i + per]))
 
 
-SUB_NAMES = None
+def lz2_compress(data, short_min=2):
+    """LZ with an optimal parse.  Tokens: 00llllll literal run 1-63;
+    01llllll + d8: copy l+2 bytes from distance d8+1; 1lllllll + d16: copy
+    l+3 bytes from distance d16; 0 = end."""
+    n=len(data); 
+    # optimal parse via DP over positions
+    INF=1<<30
+    best=[INF]*(n+1); best[n]=0; choice=[None]*(n+1)
+    # precompute matches
+    for i in range(n-1,-1,-1):
+        # literal runs of length L (1..63)
+        for L in range(1,min(63,n-i)+1):
+            c=1+L+best[i+L]
+            if c<best[i]: best[i]=c; choice[i]=('L',L)
+        # matches
+        maxlen={}
+        for d in range(1,min(i,65535)+1):
+            l=0
+            while i+l<n and l<130 and data[i+l-d]==data[i+l]: l+=1
+            if l>=2:
+                if d<=256:
+                    for L in range(short_min,min(l,65)+1):
+                        c=2+best[i+L]
+                        if c<best[i]: best[i]=c; choice[i]=('S',L,d)
+                if l>=3:
+                    for L in range(3,l+1):
+                        c=3+best[i+L]
+                        if c<best[i]: best[i]=c; choice[i]=('M',L,d)
+            if d>600 and l<3: pass
+    out=bytearray(); i=0
+    while i<n:
+        ch=choice[i]
+        if ch[0]=='L': out.append(ch[1]); out+=data[i:i+ch[1]]; i+=ch[1]
+        elif ch[0]=='S': out.append(0x40|(ch[1]-2)); out.append(ch[2]-1); i+=ch[1]
+        else: out.append(0x80|(ch[1]-3)); out+=bytes([ch[2]&255,ch[2]>>8]); i+=ch[1]
+    out.append(0)
+    return bytes(out)
+def lz2_decompress(c):
+    out=bytearray(); i=0
+    while True:
+        t=c[i]; i+=1
+        if t==0: return bytes(out)
+        if t<0x40: out+=c[i:i+t]; i+=t
+        elif t<0x80:
+            L=(t&0x3F)+2; d=c[i]+1; i+=1
+            for _ in range(L): out.append(out[-d])
+        else:
+            L=(t&0x7F)+3; d=c[i]|c[i+1]<<8; i+=2
+            for _ in range(L): out.append(out[-d])
+
+# chars of the ROM font that use pixel column 0 or 7 (or the ROM-code
+# 'glyphs' 30/31 printed by sub-stream 21): kept as full 8-bit glyphs
+FONT_EXC = (30, 31, 84, 89, 95, 127)
+
+
+# sub-stream bytes read by the live streams (wheel, needles, gauges); found
+# by tracing the model (see check_used_subs)
+USED_SUBS = ((0xA17A, 0xA189), (0xA1C6, 0xA1DD), (0xA20A, 0xA22C), (0xA23E, 0xA265),
+             (0xA292, 0xA36E))
+
+
+def check_used_subs(img):
+    reads = set()
+
+    class R(bytearray):
+        def __getitem__(s, i):
+            if isinstance(i, int) and 0xA0EB <= i < 0xA36F:
+                reads.add(i)
+            return super().__getitem__(i)
+    m, _, _ = build_dashboard(img)
+    for d in (3, 1):
+        mm = R(m)
+        run_inline(mm, 0x9FBF if d & 2 else 0xA002)
+        run_inline(mm, 0xA046 if d & 2 else 0xA06C)
+    for a in (0xA373, 0xA394, 0xA421, 0xA44E):
+        run_inline(R(m), a)
+    assert all(any(l <= r <= h for l, h in USED_SUBS) for r in reads)
 
 
 def gen(tape=None):
@@ -716,15 +792,28 @@ def gen(tape=None):
            '        .include "zx.inc"', '']
     # ---- fonts and tokens (constant) ----
     out += ['        .segment "RODATA"',
-            '        .export T_ROMFONT, T_AA2F, T_A98E, T_A3D6, T_A47B',
-            '; ROM "glyphs" 30-31 (ROM code bytes 3CF0-3CFF): sub-stream 21 prints',
-            '; ROM char 30 at (56,152) and (192,152)']
-    emit_bytes(out, rom[0x3CF0:0x3D00])
-    out += ['; Spectrum ROM font, chars 32-127 (glyph c at T_ROMFONT + 8*(c-32))',
-            'T_ROMFONT:']
-    emit_bytes(out, rom[0x3D00:0x4000])
-    out += ['; custom font DAA2F, 35 glyphs', 'T_AA2F:']
-    emit_bytes(out, img[0xAA2F:0xAB47])
+            '        .export T_FONT6, T_FEXC, T_FEXCC, T_AA2F, T_A98E, T_A3D6, T_A47B',
+            '; Spectrum ROM font chars 32-127, pixel columns 1-6 (6 bits per row,',
+            '; MSB first, bit stream): unpacked into the HIRES charset at $9900']
+    bits = ''
+    for c in range(32, 128):
+        for r in range(8):
+            bits += '{:06b}'.format((rom[0x3D00 + 8 * (c - 32) + r] >> 1) & 0x3F)
+    for c in FONT_EXC[2:]:
+        assert any(b & 0x81 for b in rom[0x3D00 + 8 * (c - 32):0x3D08 + 8 * (c - 32)])
+    for c in range(32, 128):
+        if c not in FONT_EXC:
+            assert not any(b & 0x81 for b in rom[0x3D00 + 8 * (c - 32):0x3D08 + 8 * (c - 32)])
+    out.append('T_FONT6:')
+    emit_bytes(out, [int(bits[i:i + 8], 2) for i in range(0, len(bits), 8)])
+    out += ['; full 8-bit glyphs of the chars that use column 0 or 7 (and ROM', '; codes 30/31)', 'T_FEXCC:']
+    emit_bytes(out, list(FONT_EXC))
+    out.append('T_FEXC:')
+    for c in FONT_EXC:
+        emit_bytes(out, rom[0x3C00 + 8 * c:0x3C08 + 8 * c])
+    out += ['; custom font DAA2F: glyphs 11-22 only (00-10 are the dashboard pieces',
+            '; and dial numerals of the precomputed picture)', 'T_AA2F = * - $11*8']
+    emit_bytes(out, img[0xAA2F + 0x11 * 8:0xAB47])
     out += ['; token strings (entry n at the n-th bit-7 terminator after T_A98E)',
             'T_A98E = * - 1']
     emit_bytes(out, img[0xA98F:0xAA2F])
@@ -739,29 +828,40 @@ def gen(tape=None):
             '; GOSUB table DA0BF (22 sub-streams)', 'T_A0BF:']
     for a in subs:
         out.append('        .word L_%04X' % a)
-    out.append('; sub-streams A0EB-A36E')
+    out.append('; sub-streams A0EB-A36E: only the parts the live streams use (the')
+    out.append('; others belong to the precomputed 9E21 picture and point at L_RET)')
     labels = set(subs)
-    p = lo
-    while p < hi:
-        if p in labels:
-            out.append('L_%04X:' % p)
-        if p == 0xA23F:
-            out.append('        ZLABEL $A23F, $26     ; needle parameters (SA399/SA457)')
-        q = p + 1
-        while q < hi and q not in labels and q != 0xA23F:
-            q += 1
-        emit_bytes(out, img[p:q])
-        p = q
+    for lo2, hi2 in USED_SUBS:
+        p = lo2
+        while p <= hi2:
+            if p in labels:
+                out.append('L_%04X:' % p)
+            if p == 0xA23F:
+                out.append('        ZLABEL $A23F, $26     ; needle parameters (SA399/SA457)')
+            q = p + 1
+            while q <= hi2 and q not in labels and q != 0xA23F:
+                q += 1
+            emit_bytes(out, img[p:q])
+            p = q
+    used_lab = set(a for a in subs if any(l <= a <= h for l, h in USED_SUBS))
+    out.append('L_RET:  .byte $81')
+    for a in sorted(set(subs) - used_lab):
+        out.append('L_%04X = L_RET' % a)
     # ---- dashboard ----
+    check_used_subs(img)
     m, dyn, final_state = build_dashboard(img)
     rows, errs = encode_dashboard(m, dyn)
     flat = [b for r in rows for b in r]
-    comp = oricenc.lz_compress(flat)
-    assert oricenc.lz_decompress(comp) == bytes(flat)
+    delta = bytearray(flat)             # each byte xor the byte above
+    for i in range(len(flat) - 1, 39, -1):
+        delta[i] ^= flat[i - 40]
+    comp = lz2_compress(bytes(delta))
+    assert lz2_decompress(comp) == bytes(delta)
     out += ['', '        .segment "RODATA"',
             '        .export T_DASH, T_LAMPL, T_LAMPR',
-            '; static dashboard: Oric HIRES lines 100-179 (3200 bytes), LZ packed',
-            '; (token t: 1-127 literals; 128+n: copy n+3 bytes from distance d16; 0 end)',
+            '; static dashboard: Oric HIRES lines 100-179 (3200 bytes), each byte',
+            '; xor the byte above (line 100 plain), LZ packed',
+            '; (00llllll: literals; 01llllll d8: copy l+2 from d8+1; 1lllllll d16: copy l+3 from d16; 0 end)',
             '; %d pixels differ from the Spectrum colours' % errs,
             'T_DASH:']
     emit_bytes(out, comp)

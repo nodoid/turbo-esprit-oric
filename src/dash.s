@@ -13,9 +13,10 @@
         .include "snd.inc"
         .include "gfx_streams.inc"
 
-        .import gfx_cls, gfx_lz, gfx_textinit, TEXTROW1
+        .import gfx_cls, gfx_lz, gfx_textinit, TEXTROW1, gfx_arng, gfx_km
         .import T_DASH, T_LAMPL, T_LAMPR, T_A3D6, T_A47B
-        .importzp lzs, lzd
+        .importzp lzs, lzd, lzc
+ixp = lzc                       ; SA399/SA457 patch pointer (the Z80 IX)
         ZIMPORT $A4D6
         ZIMPORT $A526
         ZIMPORT $A8DB
@@ -39,7 +40,6 @@ D9F_A259 = ZV_A23F + $1A
 D9F_A25F = ZV_A23F + $20
 
         .zeropage
-ixp:    .res 2                  ; SA399/SA457 patch pointer (the Z80 IX)
 mp:     .res 2                  ; message data pointer
 
         .segment "DATA"
@@ -66,25 +66,32 @@ tmpa:   .byte 0
         sta lzd
         lda #>($A000 + 100*40)
         sta lzd+1
-        jsr gfx_lz              ; lines 100-179
-        ; lines 180-199 black (the status lines are text rows)
-        ldx #20
-@bl:    ldy #0
-        lda #$10
-        sta (lzd),y
-        lda #$40
-:       iny
-        sta (lzd),y
-        cpy #39
-        bne :-
-        lda lzd
-        clc
-        adc #40
+        jsr gfx_lz              ; lines 100-179 (vertical xor delta)
+        lda #<($A000 + 100*40)  ; undo: byte ^= byte above (13 pages; the
+        sta lzs                 ;  overrun into lines 180-184 is blanked
+        lda #>($A000 + 100*40)  ;  below)
+        sta lzs+1
+        lda #<($A000 + 101*40)
         sta lzd
-        bcc :+
+        lda #>($A000 + 101*40)
+        sta lzd+1
+        ldx #13
+        ldy #0
+:       lda (lzd),y
+        eor (lzs),y
+        sta (lzd),y
+        iny
+        bne :-
+        inc lzs+1
         inc lzd+1
-:       dex
-        bne @bl
+        dex
+        bne :-
+        ; lines 180-199 black (the status lines are text rows)
+        lda #0
+        sta gfx_km
+        ldx #180
+        ldy #20
+        jsr gfx_arng
         ; the needles with their current parameters and the score line,
         ; exactly as the tail of the 9E21 stream draws them
         jsr Z_A4D6
