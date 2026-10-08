@@ -8,9 +8,6 @@ from data/zxram.bin (the original's working RAM image, $5B00-$7BBD).
            A line stepper call over records k..k2-1 then needs
            PSc[k2] - PSc[k] pixels (the original's 82BC loop).
   IY0[k]:  field 0 (ground line y1) of record k.
-  IYLO/IYHI[k]: address of record k ($78FE + 12k).
-  LOWBELOW[v]:  bits below the lowest set bit of v ($FF for v = 0).
-  HIGHABOVE[v]: bits above the highest set bit of v ($FF for v = 0).
 """
 import os
 import sys
@@ -47,19 +44,6 @@ def main():
                 s = (s + rec(k, c)) & 0xFF
         table('PS%d' % c, vals)
     table('IY0', [rec(k, 0) for k in range(NREC)])
-    table('IYLO', [(TABLE + 12 * k) & 0xFF for k in range(NREC)])
-    table('IYHI', [(TABLE + 12 * k) >> 8 for k in range(NREC)])
-    lb = []
-    ha = []
-    for v in range(256):
-        lb.append(((v & -v) - 1) & 0xFF if v else 0xFF)
-        if v:
-            hb = 1 << (v.bit_length() - 1)
-            ha.append((~((hb << 1) - 1)) & 0xFF)
-        else:
-            ha.append(0xFF)
-    table('LOWBELOW', lb)
-    table('HIGHABOVE', ha)
     path = os.path.join(ROOT, 'data', 'render_data.inc')
     open(path, 'w').write('\n'.join(out) + '\n')
     print('wrote', path)

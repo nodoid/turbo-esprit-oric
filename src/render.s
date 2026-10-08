@@ -16,13 +16,12 @@
 ;    58 = the horizon record) plus a pointer iyp for field reads.  The
 ;    per-unit pixel counts of the 82BC loop come from prefix-sum tables
 ;    (data/render_data.inc), so a line call costs O(pixels), not O(units).
-;  * The horizontal span fills (8195/81B7) work a byte at a time with the
-;    LOWBELOW / HIGHABOVE tables instead of a pixel at a time; 8191 (always
-;    pattern $FF) has its own copies.
+;  * The horizontal span fills (8195/81B7) work a byte at a time (bits
+;    below the lowest set bit = (v-1) & ~v; the right-hand fill mirrors it
+;    through the bit-reverse table at $5B00) instead of a pixel at a time.
 ;  * Line stepper (82AC): the Bresenham accumulator is kept as acc - d (or
 ;    acc - e), so "carry or >=" becomes a plain carry test; the loops are
-;    specialised for y-/x-major, plot/no plot/pavement dither, and in "lite"
-;    copies that skip ixl and y1 (only the building line needs them).
+;    specialised for y-/x-major and plot / no plot / pavement dither.
 ;    Steps without plotting move the cursor rows in one go.
 ;  * Vertical runs (building edges, centre line, side wall edges) go two
 ;    rows per turn (vplot).
@@ -138,7 +137,6 @@ cnt     = t3            ; loop counter save in dither loops
 
 ; private state (not compared: recomputed every frame)
 dith:   .res 1          ; non-zero: pavement dither mode (82D5/831C = ccf)
-lite:   .res 1          ; bit 7: kerb / lanes line (lx, y1 not needed)
 nsel:   .res 1          ; near zone: type column
 ntl:    .res 1          ; saved cursor (near edge top / boundary)
 nth:    .res 1
@@ -249,6 +247,20 @@ nFD .set 0
         tay
         bcc *+4
         inc ch
+.endmacro
+.macro LOWB                    ; A = bits below the lowest set bit of A ($FF if 0)
+        tax
+        dex
+        stx t4
+        eor #$FF
+        and t4
+.endmacro
+.macro HIGHA                   ; A = bits above the highest set bit of A ($FF if 0)
+        tax
+        lda $5B00,x             ; bit-reverse table (Spectrum RAM)
+        LOWB
+        tax
+        lda $5B00,x
 .endmacro
 .macro PLOT
         lda (cp),y
@@ -545,8 +557,6 @@ ZPROC $7D2D
 ; Building line of one half.
 side_scan:
         sta OFS
-        lda #0
-        sta lite
         lda #$80
         sta SIDEXR
         lda CFG_REC
@@ -753,6 +763,27 @@ def_corner:
         sta FLAGS
         rts
 
+; set_iyp: iyp = $78FE + 12 * ik
+set_iyp:
+        lda #0
+        sta iyp+1
+        lda ik
+        asl a
+        asl a
+        sta t4
+        asl a
+        rol iyp+1
+        adc t4
+        bcc :+
+        inc iyp+1
+        clc
+:       adc #<$78FE
+        sta iyp
+        lda iyp+1
+        adc #>$78FE
+        sta iyp+1
+        rts
+
 ; L7EAE far_seg: X = units of the current segment (pp at its length).
 ; C = 1: end of the building line (horizon or end of list).
 far_seg:
@@ -837,11 +868,7 @@ far_seg:
 
 ; L7F23 boundary: end of a segment (pp at the length byte of the segment)
 boundary:
-        ldx ik
-        lda IYLO,x
-        sta iyp
-        lda IYHI,x
-        sta iyp+1
+        jsr set_iyp
         lda lx
         sta BX
         INC16 pp
@@ -1011,7 +1038,6 @@ bd_4d:  lda FLAGS
 kerb:
         lda #$FF
         sta dith
-        sta lite
         jsr pop_line
         lda SEGP
         sta pp
@@ -1196,11 +1222,7 @@ end_band:
         bpl @r
         jsr fill_lff
         jsr fill_rff
-        ldx ik
-        lda IYLO,x
-        sta iyp
-        lda IYHI,x
-        sta iyp+1
+        jsr set_iyp
         ldy #7
         lda (iyp),y
         beq @r
@@ -1270,14 +1292,14 @@ fl_z:   dey                     ; whole zero bytes get the pattern
         txa
         sta (cp),y
         jmp fl_z
-fl_e:   tax                     ; up to the first set pixel
-        lda LOWBELOW,x
+fl_e:                           ; up to the first set pixel
+        LOWB
         and pat
         ora (cp),y
         sta (cp),y
         rts
-fl_b:   tax
-        lda LOWBELOW,x
+fl_b:
+        LOWB
         and rgn
         and pat
         ora fvl
@@ -1289,48 +1311,8 @@ fl_edge:
         sta (cp),y
         jmp fl_z0
 fill_lff:                       ; 8195 with A = $FF
-        ldy cl
-        lda cm
-        asl a
-        bcs flf_edge
-        sbc #0
-        eor #$FF
-        sta rgn
-        lda (cp),y
-        ora cm
-        sta fvl
-        and rgn
-        bne flf_b
-        lda rgn
-        ora fvl
-        sta (cp),y
-flf_z:  dey
-        lda (cp),y
-        bne flf_e
         lda #$FF
-        sta (cp),y
-        dey
-        lda (cp),y
-        bne flf_e
-        lda #$FF
-        sta (cp),y
-        bne flf_z
-flf_e:  tax
-        lda LOWBELOW,x
-        ora (cp),y
-        sta (cp),y
-        rts
-flf_b:  tax
-        lda LOWBELOW,x
-        and rgn
-        ora fvl
-        sta (cp),y
-        rts
-flf_edge:
-        lda (cp),y
-        ora cm
-        sta (cp),y
-        jmp flf_z
+        jmp fill_left
 fill_right:                     ; 81B7
         sta pat
         ldy cl
@@ -1359,55 +1341,22 @@ fr_z:   iny
         txa
         sta (cp),y
         jmp fr_z
-fr_e:   tax
-        lda HIGHABOVE,x
+fr_e:
+        HIGHA
         and pat
         ora (cp),y
         sta (cp),y
         rts
-fr_b:   tax
-        lda HIGHABOVE,x
+fr_b:
+        HIGHA
         and rgn
         and pat
         ora fvl
         sta (cp),y
         rts
 fill_rff:                       ; 81B7 with A = $FF
-        ldy cl
-        lda cm
-        sec
-        sbc #1
-        sta rgn
-        lda (cp),y
-        ora cm
-        sta fvl
-        and rgn
-        bne frf_b
-        lda rgn
-        ora fvl
-        sta (cp),y
-frf_z:  iny
-        lda (cp),y
-        bne frf_e
         lda #$FF
-        sta (cp),y
-        iny
-        lda (cp),y
-        bne frf_e
-        lda #$FF
-        sta (cp),y
-        bne frf_z
-frf_e:  tax
-        lda HIGHABOVE,x
-        ora (cp),y
-        sta (cp),y
-        rts
-frf_b:  tax
-        lda HIGHABOVE,x
-        and rgn
-        ora fvl
-        sta (cp),y
-        rts
+        jmp fill_right
 
 ; ============================================================================
 ; 81D7 pop_line: pop a 16-byte line record from (RECSP).
@@ -1477,13 +1426,7 @@ pop_line:
         sec
         sbc sle
 :       sta acc
-        bit lite
-        bpl :+
-        inx                     ; lite loops
-        inx
-        inx
-        inx
-:       lda VOFF,x
+        lda VOFF,x
         sta voff
         lda VOFF+1,x
         sta voff+1
@@ -1543,8 +1486,8 @@ pop_line:
         bcc :+
         inc RECSP+1
 :       rts
-VOFF:   .word ln_xs, ln_ys, lx_s, ly_s
-VON:    .word ln_xp, ln_yp, lx_p, ly_p, lx_d, ly_d
+VOFF:   .word ln_xs, ln_ys
+VON:    .word ln_xp, ln_yp, lx_d, ly_d
 
 ; ============================================================================
 ; 82AA / 82AC / 82AF line: advance the line by X depth units (0 = 256),
@@ -1619,9 +1562,9 @@ rows_up:
         sta ch
         rts
 
-; Loops: X = pixel count (nn), Y = cursor low byte.  The full versions keep
-; lx (Z80 ixl) and cb1 (y1), which only the building line uses; the "lite"
-; versions (kerb, lanes) leave them alone.
+; Loops: X = pixel count (nn), Y = cursor low byte.  They keep lx (Z80
+; ixl) and cb1 (y1), which only the building line uses; the pavement
+; dither loops (kerb only) leave them alone.
 ; y-major, plot
 ln_yp:  PLOT
         lda acc
@@ -1708,43 +1651,6 @@ xs_n:   dex
         jsr rows_up
         jmp ln_xend
 
-; ---- lite versions ----
-; y-major, plot
-ly_p:   PLOT
-        lda acc
-        clc
-        adc sle
-        bcc lyp_n
-        sbc sld
-        sta acc
-        INWARD
-        ROWUP0
-        dex
-        bne ly_p
-        sty cl
-        rts
-lyp_n:  sta acc
-        ROWUP0
-        dex
-        bne ly_p
-        sty cl
-        rts
-
-; y-major, no plot
-ly_s:   lda acc
-lys_l:  clc
-        adc sle
-        bcc lys_n
-        sbc sld
-        INWARD
-lys_n:  dex
-        bne lys_l
-        sta acc
-        lda nn
-        jsr rows_up
-        sty cl
-        rts
-
 ; y-major, dither: fill every row
 ly_d:   sty cl
         stx cnt
@@ -1768,43 +1674,6 @@ lyd_n:  sta acc
         dex
         bne ly_d
         sty cl
-        rts
-
-; x-major, plot
-lx_p:   INWARD                  ; C = 0
-        PLOT
-        lda acc
-        adc sld
-        bcc lxp_n
-        sbc sle
-        sta acc
-        ROWUP0
-        dex
-        bne lx_p
-        sty cl
-        rts
-lxp_n:  sta acc
-        dex
-        bne lx_p
-        sty cl
-        rts
-
-; x-major, no plot
-lx_s:   lda #0
-        sta t2
-        lda acc
-lxs_l:  INWARD                  ; C = 0
-        adc sld
-        bcc lxs_n
-        sbc sle
-        inc t2
-lxs_n:  dex
-        bne lxs_l
-        sta acc
-        lda t2
-        beq :+
-        jsr rows_up
-:       sty cl
         rts
 
 ; x-major, dither: fill at the first pixel of every row
@@ -2065,46 +1934,20 @@ dfill:  lda dd
         bne @pb
         ldy dsy
         rts
-@full:  lda #$20                ; two rows per turn: tp = dp + 32
-        sta tp
-        tya
+@full:  tya
         clc
         adc #32
         tay
         bcc :+
         inc dp+1
-:       lda dp+1
-        sta tp+1
-@fl:    lda (dp),y
+:       lda (dp),y
         bne @nz
         txa
         sta (dp),y
         asl a
         adc #0
         tax
-        lda (tp),y
-        bne @nz2
-        txa
-        sta (tp),y
-        asl a
-        adc #0                  ; C = 0
-        tax
-        tya
-        adc #64
-        tay
-        bcc @fl
-        inc dp+1
-        inc tp+1
-        bcs @fl
-@nz2:   cmp #$FF
-        beq @x
-        tya
-        clc
-        adc #32
-        tay
-        bcc @pb2
-        inc dp+1
-        bcs @pb2
+        jmp @full
 @nz:    cmp #$FF
         bne @pb2
 @x:     ldy dsy
@@ -2417,8 +2260,6 @@ lanes:
         bne :+
         rts
 :       sta lcnt0
-        ldx #$FF
-        stx lite
         jsr lanes_pass
         lda FLAGS
         and #$7F
