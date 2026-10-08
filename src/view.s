@@ -36,19 +36,15 @@ dptr:   .res 2                  ; Oric line address
 vt:     .res 2
 lcnt:   .res 1                  ; line counter in a char row
 gt:     .res 1                  ; converter temp
+g0:     .res 1
+g1:     .res 1
 novr:   .res 1                  ; number of overrides for this char row
 hasx:   .res 1                  ; bit 7: the row has non-zero xor masks
 ecbase: .res 1                  ; value of the empty-group constants ($FF: masks)
 
         .segment "TABLES"       ; page aligned (first segment at $0600)
 ; 8->6 conversion: group of Spectrum bytes s0 s1 s2 -> Oric columns
-;   c1 = s0>>2   c2 = TB[s0]|s1>>4   c3 = TD[s1]|TE[s2]   c4 = s2&63
-TB:     .repeat 256, i
-        .byte (i & 3) << 4
-        .endrep
-TD:     .repeat 256, i
-        .byte (i & 15) << 2
-        .endrep
+;   c1 = s0>>2   c2 = (s0&3)<<4 | s1>>4   c3 = (s1&15)<<2 | TE[s2]   c4 = s2&63
 TE:     .repeat 256, i
         .byte i >> 6
         .endrep
@@ -71,6 +67,9 @@ wheel92: .byte $01,$FF,$FF,$80
         ZLABEL $86D3, 6
         .byte $38, $38, $38, $38, $38, $38
 
+        .segment "LOBSS"
+xlast:  .res 28                 ; masks the converter is patched for
+ecbase2: .res 1
         .bss
 xorm:   .res 28                 ; xor mask per Spectrum byte for this char row
 ovcol:  .res 16                 ; overrides: Oric column
@@ -483,7 +482,7 @@ dstpage: .res 1
 ; ---------------------------------------------------------------------------
 ; The unrolled converter.  Group g handles Spectrum bytes 3g..3g+2 (buffer
 ; offsets 2+3g..4+3g) -> Oric columns 4g+1..4g+4.  Byte 27 -> column 37.
-        .segment "DATA"
+        .segment "DATA2"         ; (HIGH area)
 
 .macro SRCB i                   ; load buffer byte i, eor with its mask
         .ident(.sprintf("ls%d", i)):
@@ -522,20 +521,23 @@ converter:
         RAWO 3*g+1
         RAWO 3*g+2
         bne .ident(.sprintf("full%d", g))
-        EMPTY g, 0
-        EMPTY g, 1
-        EMPTY g, 2
-        EMPTY g, 3
+        bit hasx                ; rows with masks: do it in full
+        bmi .ident(.sprintf("full%d", g))
+        lda base                ; all paper
+        DST 4*g+1
+        DST 4*g+2
+        DST 4*g+3
+        DST 4*g+4
         jmp .ident(.sprintf("next%d", g))
 .ident(.sprintf("full%d", g)):
         SRCB 3*g                ; c1 = s0 >> 2
-        sta .ident(.sprintf("pb%d", g))+1
+        sta g0
         lsr a
         lsr a
         ora base
         DST 4*g+1
         SRCB 3*g+1
-        sta .ident(.sprintf("pd%d", g))+1
+        sta g1
         lsr a
         lsr a
         lsr a
@@ -550,13 +552,19 @@ converter:
         CLRB 3*g
         CLRB 3*g+1
         CLRB 3*g+2
-.ident(.sprintf("pb%d", g)):
-        lda TB
+        lda g0
+        and #3
+        asl a
+        asl a
+        asl a
+        asl a
         ora gt
         ora base
         DST 4*g+2
-.ident(.sprintf("pd%d", g)):
-        lda TD
+        lda g1
+        and #15
+        asl a
+        asl a
 .ident(.sprintf("pe%d", g)):
         ora TE
         ora base
@@ -613,51 +621,57 @@ patch_xor:
         sta vt
         ora hasx
         bne @p
-        lda base                ; masks zero before and after
-        cmp ecbase
-        bne @eb
-        rts
-@eb:    sta ecbase
-.repeat 9, g
-.repeat 4, k
-        sta .ident(.sprintf("ec%d_%d", g, k))+1
-.endrep
-.endrep
-        rts
+        rts                     ; masks zero before and after
 @p:     lda vt
+        bne @nz
+        lda #$FF                ; patching zeros: forget the cached masks
+        sta ecbase2
+        lda #0
         beq @z
+@nz:    ; same masks (and base) as the code was last patched for?  skip
+        lda base
+        cmp ecbase2
+        bne @chg
+        ldx #27
+@cmp:   lda xorm,x
+        cmp xlast,x
+        bne @chg
+        dex
+        bpl @cmp
+        lda #$80
+        sta hasx
+        rts
+@chg:   lda base
+        sta ecbase2
+        ldx #27
+@cp:    lda xorm,x
+        sta xlast,x
+        dex
+        bpl @cp
         lda #$80
 @z:     sta hasx
-        lda #$FF
-        sta ecbase              ; constants no longer plain base
-.repeat 28, i
-        lda xorm+i
-        sta .ident(.sprintf("lx%d", i))+1
-.endrep
-.repeat 9, g
-        lda xorm+3*g
-        lsr a
-        lsr a
-        ora base
-        sta .ident(.sprintf("ec%d_0", g))+1
-        ldx xorm+3*g
-        lda xorm+3*g+1
-        lsr a
-        lsr a
-        lsr a
-        lsr a
-        ldx xorm+3*g
-        ora TB,x
-        ora base
-        sta .ident(.sprintf("ec%d_1", g))+1
-        lda TD,x
-        ldx xorm+3*g+2
-        ora TE,x
-        ora base
-        sta .ident(.sprintf("ec%d_2", g))+1
-        lda xorm+3*g+2
-        and #63
-        ora base
-        sta .ident(.sprintf("ec%d_3", g))+1
-.endrep
+
+        ; the eor immediates of the 28 loads
+        ldx #27
+@lx:    lda lxlo,x
+        sta zl2
+        lda lxhi,x
+        sta zh2
+        lda xorm,x
+        ldy #1
+        sta (zl2),y
+        dex
+        bpl @lx
         rts
+
+
+        .segment "RODATA"
+; operand addresses for patch_xor
+lxlo:
+.repeat 28, i
+        .byte <.ident(.sprintf("lx%d", i))
+.endrep
+lxhi:
+.repeat 28, i
+        .byte >.ident(.sprintf("lx%d", i))
+.endrep

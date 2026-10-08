@@ -74,7 +74,9 @@ ZV_9563 = ZV_9560 + 3
 hjmp:   .res 3                  ; D9AE5/D9B14: transition handler
         ZVAR $FD60, $2A0        ; cross-street grids
 FDB = ZV_FD60 - $FD60           ; FDB + $FDxx = Oric address of Spectrum $FDxx
+        .segment "LOWRAM"       ; $0180-$02FF (stack shortened to $0100-$017F)
         ZVAR $9282, $153        ; current city block (copied in by the city select)
+        .segment "DATA"
 
         .zeropage
 W:      .res 12                 ; the record being processed (copy of (ziy))

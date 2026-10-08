@@ -59,7 +59,7 @@
         .segment "STARTUP"
 start:  sei
         cld
-        ldx #$FF
+        ldx #$7F                ; stack $0100-$017F; $0180-$02FF holds data
         txs
         ; clear zero page and the BSS areas
         lda #0
@@ -72,10 +72,11 @@ start:  sei
         sta $9F00,x
         inx
         bne @z
-        ldx #$43
+        ldx #0
 @p2:    sta $0200,x
-        dex
-        bpl @p2
+        sta $0180,x             ; (overlaps; $0180-$02FF cleared)
+        inx
+        bne @p2
         jsr hw_init
         ; HIRES, the three text lines below it blank (black)
         ldx #7

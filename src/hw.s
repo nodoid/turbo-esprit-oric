@@ -12,12 +12,12 @@
         .import snd_tick
 
         .zeropage
-keys:   .res 8                  ; key matrix, keys+row bit col = 1 when down
 frames: .res 1                  ; 50Hz frame counter
 kacc:   .res 1
 krow:   .res 1
 
         .bss
+keys:   .res 8                  ; key matrix, keys+row bit col = 1 when down
 irq_hook: .res 2                ; extra 50Hz handler (rts if none)
 
         .code
@@ -56,13 +56,6 @@ hw_init:
         sta $FFFA
         lda #>nmi
         sta $FFFB
-        ; (also patch the ROM's page-2 indirection, harmless when unused)
-        lda #$4C                ; JMP abs
-        sta $0244
-        lda #<irq
-        sta $0245
-        lda #>irq
-        sta $0246
         lda #<no_hook
         sta irq_hook
         lda #>no_hook

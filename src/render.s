@@ -121,7 +121,7 @@ rh      = t5
 cnt     = t3            ; loop counter save in dither loops
 
 ; ---- relocated variables ---------------------------------------------------
-        .segment "DATA2"
+        .segment "DATA"
         ZLABEL $7D15, 2
         .word $787C
         ZLABEL $7D17, 1
