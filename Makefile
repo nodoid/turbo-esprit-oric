@@ -16,8 +16,12 @@ $(BUILD)/%.o: src/%.s $(wildcard src/*.inc) | $(BUILD)
 $(BUILD)/turbo.bin: $(OBJS) src/turbo.cfg
 	$(LD) -C src/turbo.cfg -m $(BUILD)/turbo.map -Ln $(BUILD)/turbo.lbl -o $@ $(OBJS)
 
-$(TAP): $(BUILD)/turbo.bin tools/mktap.py
-	python3 tools/mktap.py $@ TURBO:0x50D:$(BUILD)/turbo.bin:auto
+$(TAP): $(BUILD)/turbo.bin data/loadscr.bin tools/mktap.py
+	python3 tools/mktap.py $@ 0x600 SCREEN:0xA000:data/loadscr.bin ESPRIT:0x600:$(BUILD)/turbo.bin
+
+# regenerate data/ from the original Spectrum tape (orig/TurboEsprit.tzx)
+extract:
+	python3 tools/mkloadscr.py orig/TurboEsprit.tzx data/loadscr.bin
 
 $(BUILD):
 	mkdir -p $(BUILD)
@@ -28,4 +32,4 @@ run: $(TAP)
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all run clean
+.PHONY: all run clean extract

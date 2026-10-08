@@ -151,22 +151,28 @@ class Mem:
 
 
 def load_tap(path, ram):
+    """Load every file of the tape; returns (first mc start, hdr of first file)."""
     d = open(path, 'rb').read()
     i = 0
-    while d[i] == 0x16:
+    first = None
+    while i < len(d):
+        while d[i] == 0x16:
+            i += 1
+        assert d[i] == 0x24, "bad tap sync"
         i += 1
-    assert d[i] == 0x24, "bad tap sync"
-    i += 1
-    hdr = d[i:i + 9]
-    end = (hdr[4] << 8) | hdr[5]
-    start = (hdr[6] << 8) | hdr[7]
-    i += 9
-    while d[i] != 0:
+        hdr = d[i:i + 9]
+        end = (hdr[4] << 8) | hdr[5]
+        start = (hdr[6] << 8) | hdr[7]
+        i += 9
+        while d[i] != 0:
+            i += 1
         i += 1
-    i += 1
-    data = d[i:i + (end - start + 1)]
-    ram[start:start + len(data)] = data
-    return start, end, hdr
+        data = d[i:i + (end - start + 1)]
+        ram[start:start + len(data)] = data
+        i += len(data)
+        if hdr[2] == 0x80 and first is None:
+            first = (start, end, hdr)
+    return first
 
 
 def render(ram):
@@ -268,7 +274,7 @@ def main():
 
     m = Machine()
     start, end, hdr = load_tap(args.tap, m.ram)
-    entry = args.entry if args.entry is not None else (start + 12 if hdr[2] == 0 else start)
+    entry = args.entry if args.entry is not None else 0x0600
     mpu = MPU(memory=Mem(m), pc=entry)
     mpu.sp = 0xFF
     os.makedirs(args.outdir, exist_ok=True)

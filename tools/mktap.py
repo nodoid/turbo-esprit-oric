@@ -1,36 +1,47 @@
 #!/usr/bin/env python3
-"""Wrap raw binaries into an Oric .tap file.
+"""Build the Oric tape: an autorunning BASIC loader followed by binary files.
 
-usage: mktap.py out.tap NAME:ADDR:file.bin[:auto] [NAME:ADDR:file.bin ...]
-Each block becomes one tape file; ':auto' marks the block to autorun (machine code).
+usage: mktap.py out.tap CALLADDR NAME:ADDR:file.bin [NAME:ADDR:file.bin ...]
+
+The loader is the one-line program
+    10 HIRES:CLOAD"":CLOAD"": ... :CALL#<CALLADDR>
+with one CLOAD per binary file.  It lives at $0501, so the binaries must
+load above it (the game starts at $0600).
 """
 import sys
 
+TOK_HIRES, TOK_CLOAD, TOK_CALL = 0xA2, 0xB6, 0xBF
 
-def block(name, addr, data, auto):
-    """auto: data must be linked at $050D; a BASIC line '800 CALL#50D'
-    is put in front and the file is saved as an autorunning BASIC program
-    (the form Oric emulators' auto-loaders handle best)."""
-    if auto:
-        assert addr == 0x050D, "autorun block must start at $050D"
-        stub = bytes([0x0B, 0x05, 0x20, 0x03, 0xBF]) + b'#50D' + bytes([0, 0, 0])
-        data = stub + data
-        addr = 0x0501
-    end = addr + len(data) - 1
-    hdr = bytes([0x16] * 3 + [0x24, 0x00, 0x00, 0x00 if auto else 0x80,
-                 0xC7 if auto else 0x00,
-                 end >> 8, end & 0xFF, addr >> 8, addr & 0xFF, 0x00])
-    return hdr + name.encode('ascii')[:15] + b'\x00' + data
+
+def header(typ, auto, start, end, name):
+    return (bytes([0x16] * 3 + [0x24, 0x00, 0x00, typ, auto,
+                                end >> 8, end & 0xFF, start >> 8, start & 0xFF, 0x00])
+            + name.encode('ascii')[:15] + b'\x00')
+
+
+def loader(nfiles, call):
+    body = bytes([TOK_HIRES])
+    for _ in range(nfiles):
+        body += b':' + bytes([TOK_CLOAD]) + b'""'
+    body += b':' + bytes([TOK_CALL]) + ('#%X' % call).encode('ascii')
+    start = 0x0501
+    nxt = start + 4 + len(body) + 1
+    prog = bytes([nxt & 0xFF, nxt >> 8, 10, 0]) + body + b'\x00' + b'\x00\x00'
+    assert start + len(prog) <= 0x0600
+    return header(0x00, 0xC7, start, start + len(prog) - 1, 'TURBO') + prog
 
 
 def main():
-    out = bytearray()
-    for spec in sys.argv[2:]:
-        parts = spec.split(':')
-        name, addr, path = parts[0], int(parts[1], 0), parts[2]
-        auto = len(parts) > 3 and parts[3] == 'auto'
-        out += block(name, addr, open(path, 'rb').read(), auto)
-    open(sys.argv[1], 'wb').write(out)
+    out = sys.argv[1]
+    call = int(sys.argv[2], 0)
+    files = []
+    for spec in sys.argv[3:]:
+        name, addr, path = spec.split(':')
+        files.append((name, int(addr, 0), open(path, 'rb').read()))
+    tape = bytearray(loader(len(files), call))
+    for name, addr, data in files:
+        tape += header(0x80, 0x00, addr, addr + len(data) - 1, name) + data
+    open(out, 'wb').write(tape)
 
 
 if __name__ == '__main__':
