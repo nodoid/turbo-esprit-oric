@@ -69,6 +69,9 @@ class Gfx:
         self.log = []
 
     def put(self, c):
+        if c < 0x20:            # custom-font glyphs (the cursor blocks)
+            self.x = (self.x + 8) & 0xFF
+            return
         if c >= 0x80:
             for ch in TOKENS[c & 0x7F]:
                 self.put(ord(ch))
@@ -150,9 +153,9 @@ class Oric:
             '        .code\ngfx_cls: rts\ngfx_attr_rows: rts\ngfx_recolour: rts\n'
             '        .data\ngfx_rc_row: .byte 0\ngfx_rc_n: .byte 0\n')
         self.name = 'menug' if real_gfx else 'menu'
-        gs = 'src/gfx.s' if real_gfx else 'build/test_menu_gstub.s'
+        gs = ['src/gfx.s', 'data/gfx_data.s'] if real_gfx else ['build/test_menu_gstub.s']
         r = subprocess.run([sys.executable, 'tools/buildtest.py', self.name, 'src/hw.s', 'src/snd.s',
-                            'src/menu.s', vs, gs], capture_output=True, text=True)
+                            'src/menu.s', vs] + gs, capture_output=True, text=True)
         if r.returncode:
             print(r.stdout, r.stderr)
             raise SystemExit(1)
@@ -185,7 +188,11 @@ class Oric:
         self.hooks[s['Z_7347']] = self.h_7347
         self.hooks[s['rnd_r']] = lambda: setattr(self.mpu, 'a', self.rnd.randrange(128))
         self.call('hw_init')
+        # the default key table in Oric codes (to be in data/zxram.bin)
+        self.m.ram[0x7524:0x7524 + 21] = bytes([1, 1, 0, 7, 2, 0, 3, 1, 0, 6, 0x20, 0, 6, 0x40, 0, 2, 1, 0, 1, 2, 0])
         self.m.ram[0xBFDF] = 0x1E           # HIRES mode for the renderer
+        if self.real_gfx:
+            self.call('gfx_textinit')       # (main.s does this at start-up)
         self.keys = []          # (from_frame, to_frame, [keys])
         self.frame = 0
 
@@ -430,7 +437,7 @@ def t_record(o, r, n=40):
         o.m.ram[o.sym['ZV_FA38']] = skill
         o.m.ram[0x750B:0x750F] = sc.to_bytes(2, 'little') + pe.to_bytes(2, 'little')
         pc = o.call('Z_FACA', stops=('Z_F867', 'Z_FA1B'), push=(o.sym['Z_FA1B'] - 1,), maxframes=50)
-        opath = 'table%02X' % o.zp('mtmp') if pc == o.sym['Z_F867'] else 'menu'
+        opath = 'table%02X' % o.zp('zd2') if pc == o.sym['Z_F867'] else 'menu'
         ores = bytes(o.m.ram[tab:tab + 160])
         if ores != zres or opath != zpath:
             bad += 1
@@ -631,9 +638,9 @@ def t_render():
     def shot(name):
         w, h, img = harness.render(o.m.ram)
         harness.write_png(os.path.join(out, name + '.png'), w, h, img)
-    o.type_keys(['3'], start=o.frame + 30)
     o.call('Z_FD11', stops=('Z_FD7C',), maxframes=100)
     shot('city')
+    o.type_keys(['3'], start=o.frame + 10)
     o.call('Z_FD7C', stops=('Z_FA90',), maxframes=200)
     shot('menu')
     o.keys = []

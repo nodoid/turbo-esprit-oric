@@ -183,15 +183,15 @@ def test_engine(o):
     o.call('snd_engine', a=1)
     ay, _ = o.tick()
     per, vol, ton, _ = chan(ay, 2)
-    ok = per == round(1e6 / 16 / 58) and vol in (4, 5) and ton
+    ok = per == 31250 // 29 and vol in (4, 5) and ton
     o.call('snd_engine', a=17)
     seq = []
     for _ in range(16):
         ay, _ = o.tick()
         seq.append(chan(ay, 2)[0])
-    tgt = round(1e6 / 16 / (50 + 8 * 17))
-    ok = ok and seq[-1] == tgt and seq[0] > seq[1] > seq[2]
-    print('  engine: revs 1 -> period %d vol %d; revs 17 glide %s -> %d %s' % (per, vol, seq[:6], tgt, 'ok' if ok else 'FAIL'))
+    tgt = 31250 // (25 + 4 * 17)
+    ok = ok and seq[0] == seq[-1] == tgt
+    print('  engine: revs 1 -> period %d vol %d; revs 17 %s -> %d %s' % (per, vol, seq[:6], tgt, 'ok' if ok else 'FAIL'))
     bad += not ok
     # effect while the menu music plays goes to C (B is a music voice), engine yields
     o.call('music_start', a=0)

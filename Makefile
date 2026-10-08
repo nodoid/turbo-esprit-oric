@@ -33,6 +33,7 @@ $(TAP): $(BUILD)/turbo.bin data/loadscr.bin tools/mktap.py
 # regenerate data/ from the original Spectrum tape (orig/TurboEsprit.tzx)
 extract:
 	python3 tools/mkloadscr.py orig/TurboEsprit.tzx data/loadscr.bin
+	cd tools && python3 gen_zxram.py ../orig/TurboEsprit.tzx ../data/zxram.bin
 	python3 tools/gen_objects.py orig/TurboEsprit.tzx data/objects_data.s
 	python3 tools/gen_snd.py
 	python3 tools/gen_render.py

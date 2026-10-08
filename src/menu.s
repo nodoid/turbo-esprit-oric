@@ -14,6 +14,9 @@
 ;    and the zero page); both options end in the original's ERROR path.
 ;  * the music plays from the interrupt; it is stopped where the original
 ;    stopped calling the player (key definition, save/load, game start).
+;
+; The menu never runs at the same time as the game code, so it keeps its
+; zero-page temporaries in the Z80 alternate register set (see below).
 
         .include "zx.inc"
         .include "snd.inc"
@@ -35,57 +38,40 @@
         .import gfx_recolour    ; A = attribute, X/Y = first/last char column,
         .import gfx_rc_row, gfx_rc_n ;  over Spectrum pixel rows rc_row, rc_n
 
-        .zeropage
-mp:     .res 2                  ; general pointer
-mq:     .res 2                  ; second pointer
-inp:    .res 2                  ; INPUT_LINE buffer pointer
+; zero-page temporaries (Z80 alternate set; nothing else is live in menus)
+held    = za                    ; DE6A7: a key was down when the wait started
+fl_on   = zf                    ; flashing cursor active (cleared by FD11)
+nomus   = za2                   ; bit 7: key wait without music (city select)
+cur_x   = zc2                   ; text cursor as set by set_cursor/print_char
+cur_y   = zb2
+mtmp    = zd2
+mcnt    = ze2
+mp      = zl2                   ; pointer (zl2/zh2)
+mq      = ziyl                  ; pointer (ziyl/ziyh)
 
-        .data
-held:   .byte 0                 ; DE6A7: a key was down when the wait started
-cur_x:  .byte 0                 ; text cursor as set by set_cursor/print_char
-cur_y:  .byte 0
-in_max: .byte 0
-in_left: .byte 0
-sv_x:   .byte 0
-sv_y:   .byte 0
-mcnt:   .byte 0
-mtmp:   .byte 0
-body:   .byte 0
-ki:     .byte 0                 ; ALTER KEYS: key number 0..6
-ky:     .byte 0                 ; ALTER KEYS: print y
-kn0:    .byte 0                 ; key name chars
-kn1:    .byte 0
-krow:   .byte 0
-kmask:  .byte 0
-dF7F7:  .word 0                 ; insert: entry 1 of the table (temp)
-dFB98:  .byte 0                 ; tape header byte
-; flashing cursor
-fl_on:  .byte 0                 ; cursor active
-fl_vis: .byte 0                 ; currently inverted
-fl_t0:  .byte 0
-fl_x:   .byte 0
-fl_y:   .byte 0
-fl_n:   .byte 0                 ; cells
-fl_b0:  .byte 0
-fl_b1:  .byte 0
-fl_l:   .byte 0
+        .bss                    ; (all written before use)
+in_max: .res 1
+in_pos: .res 1
+body:   .res 1
+toff:   .res 1                  ; table display: offset of the current entry
+ki:     .res 1                  ; ALTER KEYS: key number 0..6
+ky:     .res 1                  ; ALTER KEYS: print y
+kn0:    .res 1                  ; key name
+kn1:    .res 1
+krow:   .res 1
+kmask:  .res 1
+e1:     .res 2                  ; insert: entry 1 (DF7F7), IX at the slot
+fl_vis: .res 1                  ; cursor shown
+fl_t0:  .res 1
 
 ; ---------------------------------------------------------------------------
 ; F756-F7F6: display work byte + the SCORE and PENALTY tables (160 bytes,
 ; 8 entries x 10: name(7) skill(1) value(2); entry 0 = LAST).
-        ZLABEL $F756, 1
-        .byte 0
+; (in HIBSS: filled with the original's initial contents by FD11)
+        .segment "HIBSS"
+        ZVAR $F756, 1
         ZLABEL $F757, 160
-tables:
-        .byte " LAST  ",'1',1,0
-        .repeat 7
-        .byte "DURELL ",'1',1,0
-        .endrepeat
-        .byte " LAST  ",'1',1,0
-        .repeat 7
-        .byte "DURELL ",'1',1,0
-        .endrepeat
-        .res 10                 ; "entry 8" read (never kept) by the insert
+tables: .res 160
 SCORE1  = tables+10
 PEN1    = tables+90
 
@@ -99,41 +85,48 @@ ZPROC $FD11
         GET_R
         sta ZV_9560+1
         jsr Z_728D
-        ldx #20                 ; default keys J L K A S M T, Oric codes
-@kd:    lda keys_def,x          ; (the Spectrum table in the RAM image
-        sta $7524,x             ; holds Spectrum port/mask codes)
+        ldx #$FF                ; (the default key table J L K A S M T, in
+        stx nomus               ; Oric codes, is in the RAM image at $7524)
+        inx
+        stx fl_on
+        ldy #159                ; tables: 16 x "DURELL ",'1',1,0 ...
+@ti:    ldx #9
+@te:    lda tab_init,x
+        sta tables,y
+        dey
         dex
-        bpl @kd
+        bpl @te
+        cpy #$FF
+        bne @ti
+        ldx #6                  ; ... entries 0 = " LAST  "
+@tl:    lda last_txt,x
+        sta tables,x
+        sta tables+80,x
+        dex
+        bpl @tl
         jsr Z_A4C9
+city_txt:
         .byte $8F,$20,$41,$FF,$50,$18,"SELECT A CITY",$FF,$48,$40,"1",$FE,$20
-        .byte "WELLINGTON",$FF,$48,$50,"2",$FE,$20,"GAMESBOROUGH",$FF,$48,$60
-        .byte "3",$FE,$20,"ROMFORD",$FF,$48,$70,"4",$FE,$20,"MINSTER"
-        .byte $FF,$50,$98,"ENTER 1 TO 4",$00
+cn1:    .byte "WELLINGTON",$FF,$48,$50,"2",$FE,$20
+cn2:    .byte "GAMESBOROUGH",$FF,$48,$60,"3",$FE,$20
+cn3:    .byte "ROMFORD",$FF,$48,$70,"4",$FE,$20
+cn4:    .byte "MINSTER",$FF,$50,$98,"ENTER 1 TO 4",$00
 ZPROC $FD7C
-        jsr new_key             ; LAST-K: a newly pressed key
-        sec
-        sbc #'1'
-        bcc Z_FD7C
-        cmp #4
-        bcs Z_FD7C
+        ldx #4                  ; LAST-K: a newly pressed '1'..'4'
+        jsr pick
         jsr Z_FD91
         ldx #$FF                ; SP = 0x7300
         txs
         jmp Z_FA1B
 
 ; FD91 - A = city 0..3: copy its 0x153-byte block to D9282 and its title
-; to DBACC.
+; ("<name> MAP", placed as in the original table FDCB) to DBACC.
 ZPROC $FD91
-        asl
         tax
-        lda city_data,x
-        sta mp
-        lda city_data+1,x
+        lda city_hi,x
         sta mp+1
-        lda city_title,x
-        sta mq
-        lda city_title+1,x
-        sta mq+1
+        lda city_lo,x
+        sta mp
         ldy #0
 @c1:    lda (mp),y
         sta ZV_9282,y
@@ -146,20 +139,36 @@ ZPROC $FD91
         cpy #$53
         bne @c2
         ldy #15
-@c3:    lda (mq),y
-        sta ZV_BACC,y
+        lda #' '
+@sp:    sta ZV_BACC,y
         dey
-        bpl @c3
+        bpl @sp
+        ldy city_lead,x
+        lda city_name,x
+        tax
+@cn:    lda city_txt,x
+        bmi @map
+        sta ZV_BACC,y
+        inx
+        iny
+        bne @cn
+@map:   ldx #0
+@m:     lda map_txt,x
+        sta ZV_BACC+1,y
+        iny
+        inx
+        cpx #3
+        bne @m
         rts
 
         .rodata
-keys_def: .byte 1,$01,0, 7,$02,0, 3,$01,0, 6,$20,0, 6,$40,0, 2,$01,0, 1,$02,0
-city_data:  .addr $686B, $69BE, $6B11, $6C64
-city_title: .addr ct1, ct2, ct3, ct4
-ct1:    .byte " WELLINGTON MAP "
-ct2:    .byte "GAMESBOROUGH MAP"
-ct3:    .byte "   ROMFORD MAP  "
-ct4:    .byte "   MINSTER MAP  "
+tab_init: .byte "DURELL ",'1',1,0
+last_txt: .byte " LAST  "
+city_lo: .lobytes $686B, $69BE, $6B11, $6C64
+city_hi: .hibytes $686B, $69BE, $6B11, $6C64
+city_name: .byte cn1-city_txt, cn2-city_txt, cn3-city_txt, cn4-city_txt
+city_lead: .byte 1, 0, 3, 3
+map_txt: .byte "MAP"
         .code
 
 ; ===========================================================================
@@ -186,12 +195,10 @@ ZPROC $FA1E
         .byte "LOAD",$8B,$94,"S",$FF,$28,$80,"7",$FE,$20,$96,$FF,$28,$90,"8",$FE
         .byte $20,$8E,$FF,$48,$A8,"ENTER 1 TO 8",$00
 ZPROC $FA90
-        jsr Z_F9C4
-        sec
-        sbc #'1'
-        bcc Z_FA90
-        cmp #8
-        bcs Z_FA90
+        lda #0                  ; with music
+        sta nomus
+        ldx #8
+        jsr pick
         tax
         lda #>(Z_FA1B-1)        ; push FA1B: the options return to the menu
         pha
@@ -218,7 +225,6 @@ ZPROC $FB19
         jsr music_stop
         lda #'1'
         jmp Z_7347
-
 ; 8 PLAY, then record the result (FACA)
 ZPROC $FABC
         lda #$FF
@@ -228,15 +234,14 @@ ZPROC $FABC
         jsr music_stop
         lda #'4'
         jsr Z_7347
+
+; FACA: LAST entries get the skill and 0; SCORE-PENALTY >= 0 goes into the
+; SCORE table, else -(SCORE-PENALTY) into the PENALTY table.
 ZPROC $FACA
         lda ZV_FA38
-        sta tables+7            ; F75E, F7AE: skill of the LAST entries
+        sta tables+7            ; F75E, F7AE
         sta tables+87
-        lda #0
-        sta tables+8            ; F75F, F7AF = 0
-        sta tables+9
-        sta tables+88
-        sta tables+89
+        ldx #0
         sec                     ; HL = SCORE - PENALTY
         lda $750B
         sbc $750D
@@ -244,159 +249,126 @@ ZPROC $FACA
         lda $750C
         sbc $750E
         sta zh
-        bcc @neg
-        lda zl
-        sta tables+8
-        lda zh
-        sta tables+9
-        lda #<SCORE1
-        sta zixl
-        lda #>SCORE1
-        sta zixh
-        jsr Z_F7F9
-        bcc @hs
-        rts                     ; not a high score: back to FA1B
-@hs:    pla                     ; drop the FA1B return
-        pla
-        jsr Z_F9FD
-        jsr Z_F85D              ; (does not return: ends at FA1E)
-@neg:   sec                     ; HL = -net
-        lda #0
-        sbc zl
+        bcs @pos
+        txa                     ; HL = -HL (X = 0)
+        sbc zl                  ; (C = 0: 0 - zl - 1, fixed below)
         sta zl
-        sta tables+88
-        lda #0
+        txa
         sbc zh
         sta zh
-        sta tables+89
-        lda #<PEN1
-        sta zixl
-        lda #>PEN1
-        sta zixh
-        jsr Z_F7F9
-        bcc @hp
-        rts
-@hp:    pla
+        inc zl
+        bne @n1
+        inc zh
+@n1:    ldx #80
+@pos:   txa                     ; the other LAST value = 0
+        eor #80
+        tay
+        lda #0
+        sta tables+8,y
+        sta tables+9,y
+        lda zl
+        sta tables+8,x
+        lda zh
+        sta tables+9,x
+        txa
+        pha
+        clc
+        adc #10
+        tax
+        jsr ins_x
         pla
-        jsr Z_F9FD
-        jsr Z_F84E
+        bcs @r                  ; not a high score: back to FA1B
+        tax
+        jsr Z_F9FD              ; (keeps X)
+        txa
+        bne @pen
+        jmp Z_F85D              ; (drops the FA1B return, ends at FA1E)
+@pen:   jmp Z_F84E
+@r:     rts
 
 ; ---------------------------------------------------------------------------
 ; F7F9 - insert HL (zl/zh) into the table whose entry 1 is at IX (zix).
 ; C = not a high score.  Otherwise the new entry gets name 0x80 x 7 (to be
 ; entered), the skill digit and the value; NC.
 ZPROC $F7F9
-        lda zixl
-        sta dF7F7
-        sta mp
-        lda zixh
-        sta dF7F7+1
-        sta mp+1
-        ldy #8
-        lda zl
-        cmp (mp),y
-        iny
-        lda zh
-        sbc (mp),y
+        lda zixl                ; X = offset of entry 1 in `tables`
+        sec
+        sbc #<tables
+        tax
+ins_x:  stx e1
+        jsr cmpx
         bcs @ok
         sec                     ; HL < entry1: C (not a high score)
         rts
-@ok:    ldx #7
-@find:  ldy #8
-        lda zl
-        cmp (mp),y
-        iny
-        lda zh
-        sbc (mp),y
+@ok:    ldy #7
+@find:  jsr cmpx
         bcc @brk
-        clc
-        lda mp
-        adc #10
-        sta mp
-        bcc @n
-        inc mp+1
-@n:     dex
+        txa                     ; next entry (C = 1: +10)
+        adc #9
+        tax
+        dey
         bne @find
-@brk:   sec                     ; slot = IX - 10
-        lda mp
-        sbc #10
-        sta mp
-        bcs @s
-        dec mp+1
-@s:     stx mtmp                ; count = (7-b)*10
-        lda #7
-        sec
-        sbc mtmp
-        beq @nocopy
-        sta mtmp
-        asl
-        asl
-        adc mtmp
-        asl
-        sta mcnt
-        lda dF7F7               ; LDIR entry2.. -> entry1..
-        sta mq
-        clc
-        adc #10
-        sta inp
-        lda dF7F7+1
-        sta mq+1
-        adc #0
-        sta inp+1
-        ldy #0
-@cp:    lda (inp),y
-        sta (mq),y
+@brk:   stx e1+1                ; LDIR entry2.. -> entry1.., (IX-entry1) bytes
+        ldy e1
+@cp:    cpy e1+1
+        bcs @fill
+        lda tables+10,y
+        sta tables,y
         iny
-        cpy mcnt
         bne @cp
-@nocopy:
-        ldy #0
+@fill:  txa                     ; slot = IX - 10
+        sbc #10                 ; (C = 1)
+        tax
+        ldy #7
         lda #$80
-@nm:    sta (mp),y
-        iny
-        cpy #7
+@nm:    sta tables,x
+        inx
+        dey
         bne @nm
         lda ZV_FA38
-        sta (mp),y
-        iny
+        sta tables,x
         lda zl
-        sta (mp),y
-        iny
+        sta tables+1,x
         lda zh
-        sta (mp),y
+        sta tables+2,x
         clc
+        rts
+
+; cmpx: C = HL >= value of the entry at tables+X
+cmpx:   lda zl
+        cmp tables+8,x
+        lda zh
+        sbc tables+9,x
         rts
 
 ; ---------------------------------------------------------------------------
 ; F84E / F85D - show the PENALTY / SCORE table, then back to FA1E
 ZPROC $F84E
-        lda #<(tables+150)      ; F7ED: penalty entry 7
-        ldx #>(tables+150)
-        ldy #$8C
-        sty mtmp
-        ldy #$0F                ; body attribute
-        sty body
-        ldy #$20                ; header attribute
-        bne tab_show
+        ldx #1
+        .byte $2C               ; (bit abs: skips the ldx)
 ZPROC $F85D
-        lda #<(tables+70)       ; F79D: score entry 7
-        ldx #>(tables+70)
-        ldy #$8B
-        sty mtmp
-        ldy #$20
-        sty body
-        ldy #$0F
-tab_show:
+        ldx #0
+        lda tab_e7,x
+        sta toff
+        lda tab_tok,x
+        sta mtmp
+        lda tab_body,x
+        sta body
+        ldy tab_body+1,x        ; header attribute = the other body attribute
         jsr Z_F867
         pla                     ; drop the return to FA1B
         pla
         jmp Z_FA1E
 
-; F867 - A/X = entry 7, mtmp = title token, body = body attribute,
+        .rodata
+tab_e7:  .byte 70, 150                         ; F79D / F7ED: entry 7
+tab_tok: .byte $8B, $8C                         ; " SCORE" / "PENALTY"
+tab_body: .byte $20, $0F, $20                   ; body attr (header: next)
+        .code
+
+; F867 - toff = offset of entry 7 in `tables`, mtmp = title token, body = body attribute,
 ; Y = header attribute.
 ZPROC $F867
-        sta mp
-        stx mp+1
         lda mtmp
         sta hdr_tok1
         sta hdr_tok2
@@ -423,27 +395,26 @@ hdr_tok2:
         jsr gfx_recolour
         lda #$38
 t_row:  sta ZV_F756
-        sta zb
-        lda #$30
-        sta zc
-        jsr set_cursor
-        ldy #0
-        lda (mp),y
+        tay
+        ldx #$30
+        jsr cursor_xy
+        ldx toff
+        lda tables,x
         bpl @named
         jsr Z_F910              ; enter the name here
-@named: ldy #6
-@cn:    lda (mp),y
+        ldx toff
+@named: ldy #0
+@cn:    lda tables,x
         sta row_name,y
-        dey
-        bpl @cn
-        ldy #7
-        lda (mp),y
+        inx
+        iny
+        cpy #7
+        bne @cn
+        lda tables,x
         sta row_skill
-        iny
-        lda (mp),y
+        lda tables+1,x
         sta zl
-        iny
-        lda (mp),y
+        lda tables+2,x
         sta zh
         jsr Z_A4C9
         .byte $09
@@ -451,13 +422,11 @@ row_name:
         .byte "AAAAAAA",$FE,$18
 row_skill:
         .byte "1",$FE,$18,$FC,$00,$A0,"0",$00
+        lda toff                ; previous entry
         sec
-        lda mp
         sbc #10
-        sta mp
-        bcs t_p
-        dec mp+1
-t_p:    lda ZV_F756
+        sta toff
+        lda ZV_F756
         clc
         adc #8
         cmp #$78
@@ -465,21 +434,11 @@ t_p:    lda ZV_F756
 ZPROC $F8F5
         jsr Z_A4C9
         .byte $02,$FF,$50,$98,$98,$93,$00
-; F8FF - wait for a newly pressed key, with menu music (tunes restart)
+; F8FF - wait for a newly pressed key (any key), with menu music
 ZPROC $F8FF
-        jsr anykey
-        sta held
-@l:     lda music_busy
-        bne @m
-        jsr Z_F9FD
-@m:     jsr wait_frame
-        jsr anykey
-        beq @up
-        lda held
-        bne @l
-        rts
-@up:    sta held
-        beq @l
+        lda #$40                ; any key, with music
+        sta nomus
+        jmp getkey
 
 ; F90B - new tune, then wait for a key
 ZPROC $F90B
@@ -487,180 +446,202 @@ ZPROC $F90B
         jmp Z_F8FF
 
 ; ---------------------------------------------------------------------------
-; F910 - enter a 7-char name at (mp) at the current cursor; the cursor is
-; restored afterwards.  Preserves mp.
+; F910 - enter a 7-char name at tables+toff at the current cursor; the
+; cursor is restored afterwards.
 ZPROC $F910
-        lda mp
-        pha
-        lda mp+1
-        pha
         lda cur_x
-        sta sv_x
+        pha
         lda cur_y
-        sta sv_y
-        lda mp
+        pha
+        lda toff
+        clc
+        adc #<tables
         sta zl
-        lda mp+1
+        lda #>tables
+        adc #0
         sta zh
         lda #7
         sta zb
         jsr Z_F938
-        lda sv_x
-        sta zc
-        lda sv_y
-        sta zb
-        jsr set_cursor
         pla
-        sta mp+1
+        tay
         pla
-        sta mp
-        rts
+        tax
+        jmp cursor_xy
 
 ; F938 - INPUT_LINE: zl/zh = buffer, zb = length.  Flashing cursor; printable
 ; keys are stored and printed, DELETE removes the last one, ENTER pads the
 ; rest of the buffer with spaces and returns.
 ZPROC $F938
-        lda zl
-        sta inp
-        lda zh
-        sta inp+1
         lda zb
         sta in_max
-        sta in_left
+        lda #0
+        sta in_pos
 @loop:  lda #1
         jsr cursor_on
-@get:   jsr Z_F9C4
-        cmp #$80
-        bcs @del
-        cmp #$20
-        bcc @ctl
+        jsr Z_F9C4
         pha
         jsr cursor_off
         pla
-        ldx in_left
-        beq @loop               ; full: ignored
-        dec in_left
-        ldy #0
-        sta (inp),y
-        inc inp
-        bne @pr
-        inc inp+1
-@pr:    jsr print_char
+        ldy in_pos
+        cmp #$0D
+        beq @enter
+        cmp #$80
+        beq @del
+        cmp #$20
+        bcc @loop               ; other control keys: ignored
+        cpy in_max
+        bcs @loop               ; full: ignored
+        sta (zl),y
+        inc in_pos
+        jsr print_char
         jmp @loop
-@ctl:   cmp #$0D
-        bne @get
-        jsr cursor_off
-        ldx in_left
-        beq @ret
-        lda #' '
-        ldy #0
-@pad:   sta (inp),y
-        iny
-        dex
-        bne @pad
-@ret:   rts
-@del:   bne @get                ; only 0x80 (DELETE)
-        jsr cursor_off
-        lda in_left
-        cmp in_max
+@del:   tya
         beq @loop               ; nothing typed yet
-        lda inp
-        bne @d1
-        dec inp+1
-@d1:    dec inp
-        inc in_left
+        dec in_pos
         jsr Z_F98F
         lda #' '
         jsr print_char
         jsr Z_F98F
         jmp @loop
+@enter: lda #' '                ; pad the rest with spaces
+@pad:   cpy in_max
+        bcs @ret
+        sta (zl),y
+        iny
+        bne @pad
+@ret:   rts
 
 ; F98F - text cursor back one character
 ZPROC $F98F
         lda cur_x
         sec
         sbc #8
-        sta zc
-        lda cur_y
-        sta zb
-        jmp set_cursor
+        tax
+        ldy cur_y
+        ; fall through
+; cursor_xy: text cursor to X = x, Y = y (Spectrum pixels), remembered
+cursor_xy:
+        stx cur_x
+        stx zc
+        sty cur_y
+        sty zb
+        jmp Z_A526
+
+print_char:
+        jsr Z_A695
+        lda cur_x
+        clc
+        adc #8
+        sta cur_x
+        rts
 
 ; ---------------------------------------------------------------------------
 ; F99F - read the keyboard like ROM KEY-SCAN + the 0205 table.
-; C = 1: no key down.  C = 0: A = ASCII (A-Z, 0-9, space, 0x0D ENTER,
-; 0x80 DELETE), or A = 0 (Z) when only keys without a character are down
-; (shift, control, arrows, punctuation: ignored like CAPS SHIFT alone).
-; Unlike the Spectrum, a character key held with SHIFT still counts.
+; C = 1: no key down.  C = 0: A = ASCII (letters, digits, punctuation,
+; space, 0x0D ENTER, 0x80 DELETE), or A = 0 (Z) when only keys without a
+; character are down (shift, control, arrows...: ignored like CAPS SHIFT
+; alone).  Unlike the Spectrum, a character key held with SHIFT counts.
 ZPROC $F99F
-        lda #0
-        sta mtmp                ; a key was seen
-        ldx #7
+        lda #$80                ; character keys only
+        jsr scan
+        bcc @f
+        jsr anykey
+        beq @none
+        lda #0                  ; only keys without a character
+        clc
+        rts
+@none:  sec
+        rts
+@f:     bpl @r                  ; a character
+        and #3                  ; SP EN DL
+        tay
+        lda asc2,y
+        clc
+@r:     rts
+
+; scan: first key down (rows 0-7, columns 0-7) that has a name (A = 0) or
+; a character (A = $80).  C = 0: Y = row*8+column, A = its kname_tab entry
+; (N flag set from it).  C = 1: none.
+scan:   sta mtmp
+        ldx #0
 @r:     jsr key_row
-        cmp #0                  ; (key_row's flags are not its result)
-        beq @nx
         sta mcnt
-        inc mtmp
         txa
         asl
         asl
         asl
         tay
 @c:     lsr mcnt
-        bcc @nc
-        lda asc_tab,y
-        bne @got
-@nc:    iny
+        bcc @n
+        lda kname_tab,y
+        beq @n
+        bit mtmp
+        bpl @ok
+        cmp #$83
+        bcc @ok
+@n:     iny
         lda mcnt
         bne @c
-@nx:    dex
-        bpl @r
-        lda mtmp
-        beq @none
-        lda #0
-@got:   clc
+        inx
+        cpx #8
+        bne @r
+        sec
         rts
-@none:  sec
+@ok:    clc
+        tax                     ; (N flag of the entry)
         rts
 
 ; F9C4 - GET_KEY_MUSIC: wait for a newly pressed character key while the
 ; menu music plays (a new random tune starts when one ends).  A = ASCII.
 ZPROC $F9C4
-        jsr anykey
+        lda #0
+        sta nomus
+getkey: jsr anykey
         sta held
-@l:     lda music_busy
-        bne @m
-        jsr Z_F9FD
-@m:     jsr wait_frame
+@l:     jsr music_wait
         jsr blink
         jsr Z_F99F
         bcc @key
         lda #0
         sta held
         beq @l
-@key:   beq @l                  ; no character: ignored
-        ldx held
+@key:   bit nomus
+        bvs @any
+        tax
+        beq @l                  ; no character: ignored
+@any:   ldx held
         bne @l                  ; still the key that was down on entry
         rts
 
-; new_key - (city select, no music) wait for a newly pressed character key
-new_key:
-        jsr anykey
-        sta held
-@l:     jsr wait_frame
-        jsr Z_F99F
-        bcc @key
-        lda #0
-        sta held
-        beq @l
-@key:   beq @l
-        ldx held
-        bne @l
+; pick: wait for a key '1'..'0'+X -> A = 0..X-1 (nomus: music or not)
+pick:   stx in_max
+@l:     jsr getkey
+        sec
+        sbc #'1'
+        cmp in_max
+        bcs @l
         rts
 
-; F9F2 / F9F4 - delays (B=C=100: 38 ms = 2 frames; B=0: 0.25 s = 13 frames)
+; music_wait: restart the menu music if it ended (unless nomus), then wait
+; for the next frame
+music_wait:
+        bit nomus
+        bmi wait_frame
+        lda music_busy
+        bne wait_frame
+        jsr Z_F9FD
+wait_frame:
+        lda frames
+@w:     cmp frames
+        beq @w
+        rts
+
+; F9F2 / F9F4 - delays (B=C=100: 38 ms = 2 frames; B=0: 0.25 s = 13 frames).
+; Use A and X.
 ZPROC $F9F2
         ldx #2
-        bne delay
+        .byte $2C
 ZPROC $F9F4
         ldx #13
 delay:  jsr wait_frame
@@ -679,25 +660,14 @@ anykey: ldx #7
         lda #0
 @y:     rts
 
-wait_frame:
-        lda frames
-@w:     cmp frames
-        beq @w
-        rts
-
 ; ---------------------------------------------------------------------------
 ; 1 ALTER SKILL
 ZPROC $FB23
         jsr Z_A4C9
         .byte $01,$FF,$A0,$A8,"4",$00
-        jmp @in
-@bad:   lda #SND_BADKEY         ; S10
-        jsr snd_fx
-@in:    lda #$B8
-        sta zc
-        lda #$20
-        sta zb
-        jsr set_cursor
+@in:    ldx #$B8
+        ldy #$20
+        jsr cursor_xy
         lda #<ZV_FA38
         sta zl
         lda #>ZV_FA38
@@ -708,37 +678,36 @@ ZPROC $FB23
         lda ZV_FA38
         sec
         sbc #'1'
-        bcc @bad
         cmp #4
-        bcs @bad
-        pla
+        bcc @ok
+        lda #SND_BADKEY         ; S10
+        jsr snd_fx
+        jmp @in
+@ok:    pla
         pla
         jmp Z_FA1E
 
 ; ---------------------------------------------------------------------------
 ; 6 LOAD / 5 SAVE SCORE TABLES.  No tape on the Oric: the original's ERROR
 ; path (it was taken whenever the ROM tape routine failed).
-ZPROC $FB51
-        jsr music_stop
-        lda #7
-        jsr gfx_cls
-        jmp tape_err
 ZPROC $FB99
         lda #7
         jsr gfx_cls
         jsr Z_F8F5              ; PRESS ANY KEY (with music)
         jsr music_stop
+        jsr Z_F9F4              ; 0.25 s
+ZPROC $FB51
+        jsr music_stop
+tape_cls:
         lda #7
         jsr gfx_cls
-        jsr Z_F9F4              ; 0.25 s
 ZPROC $FB77
-tape_err:
         jsr Z_A4C9
         .byte $05,$FF,$68,$58,"ERROR",$00
         lda #SND_TAPEERR        ; S11, 0.24 s
         jsr snd_fx
         ldx #12
-        jmp delay
+        bne delay
 
 ; ---------------------------------------------------------------------------
 ; 2 ALTER PLAYING KEYS
@@ -771,32 +740,26 @@ ZPROC $FBD6
         sta ki
         lda #$28
         sta ky
-@key:   lda #$A0
-        sta zc
-        lda ky
-        sta zb
-        jsr set_cursor
+@key:   ldx #$A0
+        ldy ky
+        jsr cursor_xy
         lda #SND_KEYBLIP        ; S9
         jsr snd_fx
         lda #2
         jsr cursor_on
         jsr Z_FCA4
-        ldx ki                  ; name into the text
-        lda kname_lo,x
-        sta mq
-        lda kname_hi,x
-        sta mq+1
-        ldy #0
-        lda kn0
-        sta (mq),y
-        iny
-        lda kn1
-        sta (mq),y
-        txa                     ; table entry: row, column mask, 0
+        lda ki                  ; name into the text: FBFB + 12*i
         asl
         adc ki
-        tax
-        lda krow
+        tax                     ; X = 3*i (table entry)
+        asl
+        asl
+        tay                     ; Y = 12*i
+        lda kn0
+        sta ZV_FBFB,y
+        lda kn1
+        sta ZV_FBFB+1,y
+        lda krow                ; table entry: row, column mask, 0
         sta $7524,x
         lda kmask
         sta $7525,x
@@ -820,11 +783,6 @@ ZPROC $FBD6
         jsr Z_F90B
         jmp Z_FA1E
 
-        .rodata
-kname_lo: .lobytes ZV_FBFB, ZV_FC07, ZV_FC13, ZV_FC1F, ZV_FC2B, ZV_FC37, ZV_FC43
-kname_hi: .hibytes ZV_FBFB, ZV_FC07, ZV_FC13, ZV_FC1F, ZV_FC2B, ZV_FC37, ZV_FC43
-        .code
-
 ; FCA4 - wait for a key to define: all keys released, 38 ms, then the first
 ; key found (rows 0..7, columns 0..7).  Returns krow, kmask and the 2-char
 ; name kn0/kn1.
@@ -836,65 +794,48 @@ ZPROC $FCA4
         jsr Z_F9F2
 @scan:  jsr wait_frame
         jsr blink
-        ldx #0
-@r:     jsr key_row
-        cmp #0
-        bne @found
-@nr:    inx
-        cpx #8
-        bne @r
-        beq @scan
-@found: sta mcnt
-        stx krow
+        lda #0
+        jsr scan
+        bcs @scan
+        tax
+        tya
+        lsr
+        lsr
+        lsr
+        sta krow
+        tya
+        and #7
+        tay
+        lda #0
+        sec
+@m:     rol
+        dey
+        bpl @m
+        sta kmask
         txa
-        asl
-        asl
-        asl
-        sta mtmp
-        lda #1
-@c:     bit mcnt
-        bne @col
-@nc:    inc mtmp
-        asl
-        bne @c
-        beq @nr
-@col:   sta kmask
-        lda mtmp                ; name: 2 bytes per key
+        ldx #' '
+        cmp #$80
+        bcc @one
         asl
         tay
-        lda kname_tab,y
-        beq @skip
-        sta kn0
-        lda kname_tab+1,y
-        sta kn1
+        lda names2,y
+        ldx names2+1,y
+@one:   sta kn0
+        stx kn1
         rts
-@skip:  lda kmask               ; a matrix position without a key
-        bne @nc
 
 ; ---------------------------------------------------------------------------
-; helpers
-
-; set_cursor: zc = x, zb = y (Spectrum pixels), remembered for the cursor
-set_cursor:
-        lda zc
-        sta cur_x
-        lda zb
-        sta cur_y
-        jmp Z_A526
-
-print_char:
-        jsr Z_A695
-        lda cur_x
-        clc
-        adc #8
-        sta cur_x
-        rts
-
 ; Flashing cursor (the Spectrum FLASH bit on 1 or 2 cells at the text
-; cursor): the cells' screen bytes are shown in inverse video, toggled every
-; 16 frames while waiting for keys.  A = number of cells.
+; cursor): the engine XOR-prints solid blocks (custom-font glyph $18) over
+; the cells, i.e. swaps their ink and paper like FLASH; toggled every 16
+; frames while waiting for keys.  A = number of cells.
 cursor_on:
         sta fl_n
+        lsr                     ; second block, or (1 cell) a harmless
+        lda #$82                ; MODE OR command in its place
+        bcs @one
+        lda #$18
+@one:   sta fl_b2
         lda cur_x
         sta fl_x
         lda cur_y
@@ -903,123 +844,55 @@ cursor_on:
         sta fl_t0
         lda #1
         sta fl_on
-        lda #0
+        lsr
         sta fl_vis
-        jmp inv_toggle
+        beq inv_toggle
 cursor_off:
         lda fl_on
-        beq @r
-        lda #0
-        sta fl_on
+        beq rts1
+        lsr fl_on               ; (1 -> 0)
         lda fl_vis
         bne inv_toggle
-@r:     rts
-blink:
-        lda fl_on
-        beq @r
+rts1:   rts
+blink:  lda fl_on
+        beq rts1
         lda frames
         sec
         sbc fl_t0
-        and #16
-        cmp #16                 ; C = 1: off phase
-        lda fl_vis
-        bcs @off
-        beq inv_toggle
-@r:     rts
-@off:   bne inv_toggle
-        rts
-
-; inv_toggle: invert the screen bytes covering fl_n cells at (fl_x, fl_y):
-; Oric lines y+4..y+11, byte columns (x+6)/6 .. (x+6+8n-1)/6.
+        and #16                 ; on for 16 frames, off for 16
+        lsr
+        lsr
+        lsr
+        lsr
+        eor #1
+        cmp fl_vis
+        beq rts1
 inv_toggle:
         lda fl_vis
         eor #1
         sta fl_vis
-        lda fl_x
-        clc
-        adc #6
-        jsr div6
-        sta fl_b0
-        lda fl_n
-        asl
-        asl
-        asl
-        adc #5
-        adc fl_x
-        jsr div6
-        sta fl_b1
-        lda fl_y
-        clc
-        adc #4
-        sta fl_l
-        lda #8
-        sta mcnt
-@line:  lda fl_l                ; mq = HIRES + line*40
-        sta mq
-        lda #0
-        sta mq+1
-        asl mq                  ; *8
-        rol mq+1
-        asl mq
-        rol mq+1
-        asl mq
-        rol mq+1
-        lda mq
-        ldx mq+1
-        asl mq                  ; *32
-        rol mq+1
-        asl mq
-        rol mq+1
-        clc
-        adc mq
-        sta mq
-        txa
-        adc mq+1
-        adc #>HIRES
-        sta mq+1
-        ldy fl_b0
-@b:     lda (mq),y
-        and #$40
-        beq @attr               ; never touch an attribute byte
-        lda (mq),y
-        eor #$80
-        sta (mq),y
-@attr:  cpy fl_b1
-        iny
-        bcc @b
-        inc fl_l
-        dec mcnt
-        bne @line
-        rts
-
-; div6: A = A / 6 (A < 256)
-div6:   ldx #0
-        sec
-@d:     sbc #6
-        bcc @e
-        inx
-        bcs @d
-@e:     txa
-        rts
+        jsr Z_A4C9
+        .byte $84,$8D           ; XOR mode, custom font
+fl_n:   .byte 1,$FF
+fl_x:   .byte 0
+fl_y:   .byte 0,$18
+fl_b2:  .byte $18,$8D,$83,$00   ; ROM font, overwrite mode
+        ldx cur_x               ; the engine's text cursor back
+        ldy cur_y
+        jmp cursor_xy
 
         .rodata
-; Oric matrix -> ASCII for text input (0 = no character)
-asc_tab:
-        .byte "7N5V",0,"1X3"
-        .byte "JTRF",0,0,"QD"
-        .byte "M6B4",0,"Z2C"
-        .byte "K9",0,0,0,0,0,0
-        .byte " ",0,0,0,0,0,0,0
-        .byte "UIOP",0,$80,0,0
-        .byte "YHGE",0,"ASW"
-        .byte "8L0",0,0,$0D,0,0
-; Oric matrix -> 2-char key name for ALTER PLAYING KEYS (0 = no key)
+; Oric matrix -> key name: a character (shown with a space after it), $80+i
+; = 2-letter name i of names2, 0 = no key.  Also the text input table: the
+; characters, and SP EN DL -> ' ', ENTER, DELETE.
 kname_tab:
-        .byte "7 N 5 V CT1 X 3 "
-        .byte "J T R F ",0,0,"ESQ D "
-        .byte "M 6 B 4 CTZ 2 C "
-        .byte "K 9 ; - ",0,0,0,0,"\ ' "
-        .byte "SP, . UPLSLTDNRT"
-        .byte "U I O P FNDL] [ "
-        .byte "Y H G E ",0,0,"A S W "
-        .byte "8 L 0 / RSEN",0,0,"= "
+        .byte "7N5V",$83,"1X3"
+        .byte "JTRF",0,$84,"QD"
+        .byte "M6B4",$83,"Z2C"
+        .byte "K9;-",0,0,"\'"
+        .byte $80,",.",$85,$86,$87,$88,$89
+        .byte "UIOP",$8A,$82,"]["
+        .byte "YHGE",0,"ASW"
+        .byte "8L0/",$8B,$81,0,"="
+names2: .byte "SPENDLCTESUPLSLTDNRTFNRS"
+asc2:   .byte ' ', $0D, $80
