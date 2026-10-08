@@ -34,5 +34,9 @@ rnd_r:  lda VIA_T2CL
         and #$7F                ; R is 7 bits on the Z80
         rts
 
-        .segment "ZXRAM"
-        .incbin "zxram.bin"
+        .segment "ZXRAM"         ; $5B00-$72FF
+        .incbin "zxram.bin", 0, $1800
+        .segment "ZXRAM2"        ; $73DA-$7403 (print streams at $73DA/$73EB)
+        .incbin "zxram.bin", $73DA - $5B00, $2A
+        .segment "ZXRAM3"        ; $74D3-$7BBD
+        .incbin "zxram.bin", $74D3 - $5B00

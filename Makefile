@@ -2,7 +2,6 @@
 AS      = ca65
 LD      = ld65
 BUILD   = build
-TAP     = $(BUILD)/turbo.tap
 DSK     = $(BUILD)/turbo.dsk
 # tap2dsk (Euphoric tools, carries Sedoric 3) - needed for the disk image
 TAP2DSK ?= tap2dsk
@@ -13,10 +12,15 @@ SRCS    = $(wildcard src/*.s)
 DSRCS   = data/view_data.s data/gfx_data.s
 OBJS    = $(patsubst src/%.s,$(BUILD)/%.o,$(SRCS)) $(patsubst data/%.s,$(BUILD)/data_%.o,$(DSRCS))
 
-all: $(DSK) $(TAP)
+all: $(DSK)
 
-$(DSK): $(BUILD)/turbo.bin data/loadscr.bin tools/mkdsk.py
-	TAP2DSK=$(TAP2DSK) python3 tools/mkdsk.py $@ data/loadscr.bin $(BUILD)/turbo.bin $(BUILD)/turbo.bin.ovl
+$(DSK): $(BUILD)/turbo.bin $(BUILD)/boot.bin data/loadscr.bin tools/mkdsk.py src/disk.inc
+	TAP2DSK=$(TAP2DSK) python3 tools/mkdsk.py $@ data/loadscr.bin $(BUILD)/turbo.bin $(BUILD)/boot.bin \
+		$(BUILD)/turbo.bin.ovl $(BUILD)/turbo.bin.menu $(BUILD)/turbo.bin.dash
+
+$(BUILD)/boot.bin: src/boot/boot.s src/disk.inc src/hw.inc | $(BUILD)
+	$(AS) -I src -o $(BUILD)/boot.o src/boot/boot.s
+	$(LD) -t none -o $@ $(BUILD)/boot.o
 
 $(BUILD)/%.o: src/%.s $(wildcard src/*.inc) | $(BUILD)
 	$(AS) -g -I src -I data --bin-include-dir data -o $@ $<
@@ -26,9 +30,6 @@ $(BUILD)/data_%.o: data/%.s | $(BUILD)
 
 $(BUILD)/turbo.bin: $(OBJS) src/turbo.cfg
 	$(LD) -C src/turbo.cfg -m $(BUILD)/turbo.map -Ln $(BUILD)/turbo.lbl -o $@ $(OBJS)
-
-$(TAP): $(BUILD)/turbo.bin data/loadscr.bin tools/mktap.py
-	python3 tools/mktap.py $@ data/loadscr.bin $(BUILD)/turbo.bin.ovl $(BUILD)/turbo.bin
 
 # regenerate data/ from the original Spectrum tape (orig/TurboEsprit.tzx)
 extract:

@@ -14,6 +14,7 @@ snd_ptab: .byte 0,$1C,$FD,$E2,$D5,$C9,$BE,$B3,$A9,$A0,$97,$8E,$7F,$78,$71,$6B,$6
 
 ; tune table: voice A list, voice B list
 snd_tunes: .addr menu_a_a, menu_a_b, menu_b_a, menu_b_b, start_a, start_b
+        .segment "MRODATA"
 menu_a_a:
         .byte $56,$D6,$11,$10,$14,$10,$53,$11,$10,$D1,$0F,$10
         .byte $0E,$10,$0F,$10,$51,$4B,$4C,$51,$54,$13,$10
@@ -46,6 +47,7 @@ menu_b_b:
         .byte $14,$10,$12,$10,$54,$16,$10,$D6,$14,$10,$12,$10,$14,$10
         .byte $FE,<(menu_b_b+25),>(menu_b_b+25),9,$17,$10,$16,$10,$14,$10,$56,$17,$10,$D7,$16,$10
         .byte $14,$10,$16,$10,$FE,<(menu_b_b+45),>(menu_b_b+45),8,$16,$0F,$00,$80,$16,$01,$FF
+        .rodata
 start_a:
         .byte $20,$06,$A0,$06,$1D,$0C,$1F,$0C,$1E,$06,$1D,$0C,$9D,$06,$1C,$0C
         .byte $1B,$0C,$1C,$0C,$1D,$06,$9D,$06,$20,$06,$1D,$06,$1E,$06,$20,$0C

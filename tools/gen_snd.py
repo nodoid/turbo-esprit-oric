@@ -330,6 +330,10 @@ def main():
             lists.append([((idx[s_] if s_ is not None else 0) | (0x80 if g else 0), k) for s_, k, g in rl])
     total = 0
     for nm, items in zip(names, compress(lists)):
+        if nm == 'menu_a_a':        # menu tunes: only in the menu blob (disk)
+            L.append('        .segment "MRODATA"')
+        elif nm == 'start_a':       # the start jingle stays resident
+            L.append('        .rodata')
         L.append('%s:' % nm)
         flat = []
         for it in items:

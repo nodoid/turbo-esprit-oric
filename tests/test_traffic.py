@@ -421,7 +421,8 @@ def main():
     sim.mpu.step = step
     st_car = Stats('SAB61')
     st_all = Stats('SAB47')
-    units = {a: Stats('S%04X' % a) for a in (0xB412, 0xB3B3, 0xB241, 0xB0AA, 0xB91B, 0xB9EE, 0xB83A)}
+    units = {a: Stats('S%04X' % a) for a in (0xB412, 0xB3B3, 0xB241, 0xB0AA, 0xB91B, 0xB9EE, 0xB83A,
+                                         0xB905, 0xB913, 0xB9DD, 0xB1BC)}
     t0 = time.time()
     for city in '1234':
         r = Ref()

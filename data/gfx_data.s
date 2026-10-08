@@ -181,8 +181,8 @@ L_A266 = L_RET
 L_A267 = L_RET
 L_A26B = L_RET
 
-        .segment "RODATA"
-        .export T_DASH, T_LAMPL, T_LAMPR
+        .segment "DASHBLOB"     ; loaded from disk at game start (src/disk.inc)
+        .export T_DASH, T_LAMPL, T_LAMPR, T_DASH_END
 ; static dashboard: Oric HIRES lines 100-179 (3200 bytes), each byte
 ; xor the byte above (line 100 plain), LZ packed
 ; (00llllll: literals; 01llllll d8: copy l+2 from d8+1; 1lllllll d16: copy l+3 from d16; 0 end)
@@ -295,6 +295,8 @@ T_DASH:
         .byte $2C,$02,$50,$FD,$02,$06,$19,$40,$02,$4D,$51,$53,$E2,$40,$9F,$4E
         .byte $11,$01,$1B,$4B,$0D,$85,$75,$09,$02,$05,$1A,$83,$C1,$04,$48,$6C
         .byte $01,$3E,$00
+T_DASH_END:
+        .segment "RODATA"
 ; indicator lamp L: (screen address, xor) - on <-> off, 0-terminated
 T_LAMPL:
         .word $B65D

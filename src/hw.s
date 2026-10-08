@@ -46,7 +46,7 @@ hw_init:
         ; Overlay RAM: the ROM is switched off for good (Microdisc control
         ; register: bit 1 = 0 maps the RAM at $C000, bit 7 = 1 keeps the disk
         ; EPROM out), so the 6502 takes its vectors from RAM.
-        lda #$80
+        lda #$84                ; (drive 0, side 0, as the boot stub left it)
         sta MDCTRL
         lda #<irq
         sta $FFFE

@@ -14,6 +14,7 @@
 ; through mission.s's work record CR (SE3EA).
 
         .include "zx.inc"
+        .importzp frames
 
         ZIMPORT $F37A           ; key test (hw.s)
         ZIMPORT $98F4           ; two-key test -> D
@@ -25,7 +26,6 @@
         ZIMPORT $A526           ; gfx: set cursor BC = (x,y)
         ZIMPORT $A695           ; gfx: print glyph A
         ZIMPORT $A911           ; gfx: print number HL (A = skip, E = flags)
-        ZIMPORT $F9F2           ; delay
         ZIMPORT $DA80           ; mission: IY = object of car IX
         ZIMPORT $DC5F           ; mission: object IY -> map record IX (and CR)
         ZVIMPORT $9282          ; city block
@@ -58,11 +58,11 @@ lflag   = rdist
 mk      = rcame                 ; (these two live across calls of DC5F/DA80,
 mgly    = rd                    ;  which do not use them)
 
-        .data
+        .segment "DATA2"
         ZLABEL $E3B9, 1         ; label letter 'N' / 'E' (SMC operand)
         .byte $4E
 
-        .rodata
+        .segment "RODATAH2"
 ; junction landmark 0x21 offsets: N-S case (x^y bit2 set / clear), E-W case
 owgg:   .byte $1C, $1A
 owgl:   .byte $FD, $05
@@ -76,7 +76,7 @@ ftn:    .byte 8, 8, 96, 96, 10
 ftw:    .byte 20, 20, 1, 1, 20
 ftv:    .byte 0, 0, 0, 0, $20
 
-        .code
+        .segment "CODE2"
 
 ; key entry $75xx (A = low byte) -> zl/zh
 setkp:  sta zl
@@ -365,7 +365,7 @@ setkp:  sta zl
         sta zixl
         lda #$78
         sta zixh
-@e2ca:  jsr Z_F9F2
+@e2ca:  jsr delay2
         ; --- frame: clear rows 1-8 and 90-97, columns 5 and 26, green paper
         ldx #4
 @fc:    lda ftlo,x
@@ -662,3 +662,12 @@ se3ea:  ldx CR+1
         lda mgly
         jmp le341
 @r:     rts
+
+; delay2: two 50Hz frames (the original's 38 ms delay SF9F2)
+delay2: ldx #2
+@f:     lda frames
+@w:     cmp frames
+        beq @w
+        dex
+        bne @f
+        rts

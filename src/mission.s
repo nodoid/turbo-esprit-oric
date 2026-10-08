@@ -95,7 +95,7 @@ rp:     .res 6
         ZLABEL $E088, 2         ; meeting point (x,y)
         .byte 0, 0
 
-        .rodata
+        .segment "RODATAH1"
 T_DDCB: .byte $08, $04, $02, $01        ; no U-turn: mask by arrival direction
 kdir:   .byte 1, 0, 3, 2                ; search order E N W S
 kbit:   .byte 1, 2, 4, 8

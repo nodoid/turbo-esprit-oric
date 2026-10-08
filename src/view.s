@@ -42,12 +42,9 @@ ecbase: .res 1                  ; value of the empty-group constants ($FF: masks
 
         .segment "TABLES"       ; page aligned (first segment at $0600)
 ; 8->6 conversion: group of Spectrum bytes s0 s1 s2 -> Oric columns
-;   c1 = s0>>2   c2 = TB[s0]|TC[s1]   c3 = TD[s1]|TE[s2]   c4 = s2&63
+;   c1 = s0>>2   c2 = TB[s0]|s1>>4   c3 = TD[s1]|TE[s2]   c4 = s2&63
 TB:     .repeat 256, i
         .byte (i & 3) << 4
-        .endrep
-TC:     .repeat 256, i
-        .byte i >> 4
         .endrep
 TD:     .repeat 256, i
         .byte (i & 15) << 2
@@ -56,7 +53,7 @@ TE:     .repeat 256, i
         .byte i >> 6
         .endrep
 
-        .segment "RODATA"
+        .segment "RODATAH1"
 ; Spectrum colour number -> Oric colour number
 zx2oric: .byte 0, 4, 1, 5, 2, 6, 3, 7
 
@@ -538,8 +535,12 @@ converter:
         ora base
         DST 4*g+1
         SRCB 3*g+1
-        sta .ident(.sprintf("pc%d", g))+1
         sta .ident(.sprintf("pd%d", g))+1
+        lsr a
+        lsr a
+        lsr a
+        lsr a
+        sta gt
         SRCB 3*g+2              ; c4 = s2 & 63
         sta .ident(.sprintf("pe%d", g))+1
         and #63
@@ -551,8 +552,7 @@ converter:
         CLRB 3*g+2
 .ident(.sprintf("pb%d", g)):
         lda TB
-.ident(.sprintf("pc%d", g)):
-        ora TC
+        ora gt
         ora base
         DST 4*g+2
 .ident(.sprintf("pd%d", g)):
@@ -641,9 +641,13 @@ patch_xor:
         ora base
         sta .ident(.sprintf("ec%d_0", g))+1
         ldx xorm+3*g
-        lda TB,x
-        ldx xorm+3*g+1
-        ora TC,x
+        lda xorm+3*g+1
+        lsr a
+        lsr a
+        lsr a
+        lsr a
+        ldx xorm+3*g
+        ora TB,x
         ora base
         sta .ident(.sprintf("ec%d_1", g))+1
         lda TD,x

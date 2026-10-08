@@ -3,7 +3,11 @@
 ;
 ; Translation notes
 ; -----------------
-; * IY (the car record, 12 bytes) stays in ziyl/ziyh and is used as (ziyl),y.
+; * IY (the car record, 12 bytes) stays in ziyl/ziyh.  For speed and size the
+;   record is copied to zero page (rc0..rc11, rload) when a car's update
+;   starts and written back (rstore) when it ends; the entry points other
+;   modules call do the same around the shared internal code.  Before LDBFA
+;   (which reads the record) the copy is written back first (todbfa).
 ;   IX is always $75E1 in this code, so (ix+n) is the absolute $75E1+n.
 ; * The original uses both Z80 register sets.  "P" (the set that is active
 ;   when SAB61 starts) lives in zb zc zd ze zh zl, the other set ("alt") in
@@ -14,7 +18,7 @@
 ; * The side-street tables live at Spectrum $FD60-$FFFF, owned by the world
 ;   module as ZV_FD60.  The car records hold the Spectrum addresses (they
 ;   are compared with the Spectrum), so every access through a pointer whose
-;   high byte is >= $FD is relocated by ZV_FD60-$FD60 (MAP / rd2).
+;   high byte is >= $FD is relocated by ZV_FD60-$FD60 (mapy / rd2).
 ; * Self-modified operands that carry state are ZVARs holding the Spectrum
 ;   values: $B100 (inc l / dec l opcode of the look-ahead), $B61F/$B63E (the
 ;   scan routine CALL targets, as Spectrum addresses $B4A5/$B502/$B56D/$B5BB),
@@ -53,6 +57,16 @@
 OFS = ZV_FD60 - $FD60           ; Spectrum table address -> Oric address
 
         .zeropage
+rc0:    .res 12         ; working copy of the car record (IY+0..11)
+rc1 = rc0+1
+rc2 = rc0+2
+rc5 = rc0+5
+rc6 = rc0+6
+rc7 = rc0+7
+rc8 = rc0+8
+rc9 = rc0+9
+rc10 = rc0+10
+rc11 = rc0+11
 mp:     .res 2          ; mapped (Oric) pointer
 tp:     .res 2          ; obstacle record+1 for sb12f
 gp:     .res 2          ; grid pointer, low byte always 0
@@ -68,7 +82,11 @@ t5:     .res 1          ; mul12 scratch
 t6:     .res 1
 cnt:    .res 1          ; sb9a0 loop count (the original's A')
 nsub:   .res 1          ; LB7D2 new sub-position
-tent:   .res 1          ; sb387: DB3A3 entry
+tent:   .res 1
+dirf:   .res 1          ; rec5 bit1 -> bit7, bit0 -> bit6          ; sb387: DB3A3 entry
+sd:     .res 1          ; scan direction +1/-1 (SB4A5/SB502)
+svl:    .res 1          ; saved HL' around the transverse scans
+svh:    .res 1
 ent:    .res 1          ; LE833: DE94D entry
 
         .segment "DATA"
@@ -82,36 +100,37 @@ ent:    .res 1          ; LE833: DE94D entry
 
         .rodata
 T_B3A3: .byte $04,$00,$02,$01,$01,$04,$02,$01,$01,$01,$06,$01,$01,$01,$04,$02
+T_B265: .byte $00,$00,$D0,$80,$00,$00,$D0,$20,$80,$80,$80,$80,$D0,$00,$D0,$20
+        .byte $00,$00,$80,$80,$00,$00,$D0,$20,$D0,$80,$D0,$80,$D0,$00,$D0,$20
+; zone thresholds for LAD43: dir 0 / dir 2
+T_ZN:   .byte $32,$3A,$68,$76,$24,$FF,$39
+        .byte $26,$2E,$56,$61,$26,$06,$34
+T_TB:   .byte <$FD6B,<$FEB0,>$FD6B,>$FEB0
 T_E94D: .byte $01,$01,$24,$24,$03,$03,$04,$04,$01,$25,$24,$27,$03,$07,$04,$05
         .byte $25,$24,$27,$03,$07,$04,$05,$01
 
         .code
 
-; MAP lo,hi : mp = Oric address of the Spectrum address hi:lo.
-.macro MAP lo, hi
-        .local ok, done
-        lda hi
+
+map_z2: ldy #zl2
+        bne mapy
+map_g:  ldy #gl
+        bne mapy
+map_z:  ldy #zl
+mapy:   lda 1,y
         cmp #$FD
-        bcc ok
+        bcc :+
         clc
-        lda lo
+        lda 0,y
         adc #<OFS
         sta mp
-        lda hi
+        lda 1,y
         adc #>OFS
         sta mp+1
-        jmp done
-ok:     sta mp+1
-        lda lo
+        rts
+:       sta mp+1
+        lda 0,y
         sta mp
-done:
-.endmacro
-
-map_z2: MAP zl2, zh2
-        rts
-map_g:  MAP gl, gh
-        rts
-map_z:  MAP zl, zh
         rts
 
 ; rd2: A = (zh2:zl2), flags N/Z from the value.  Y = 0.
@@ -136,19 +155,19 @@ exx_:   pha
 ; pointer.  Sets o1/o2/o3 = s, 2s, 3s and mp -= 3s, so the 4 cells of an
 ; object are (mp),o3 (head) .. (mp),0.
 p4base: cpx #$FF
-        bne @12
+        bne c_p4base_12
         lda #1
         sta o1
         lda #2
         sta o2
         lda #3
-        bne @s
-@12:    lda #12
+        bne c_p4base_s
+c_p4base_12:    lda #12
         sta o1
         lda #24
         sta o2
         lda #36
-@s:     sta o3
+c_p4base_s:     sta o3
         lda mp
         sec
         sbc o3
@@ -190,6 +209,75 @@ mul12:  asl a
         inx
 :       rts
 
+; rload / rstore: (IY) <-> rc0..rc11
+rload:
+        ldy #11
+        lda (ziyl),y            ;mem
+        sta rc11
+        dey
+        lda (ziyl),y            ;mem
+        sta rc10
+        dey
+        lda (ziyl),y            ;mem
+        sta rc9
+        dey
+        lda (ziyl),y            ;mem
+        sta rc8
+        dey
+        lda (ziyl),y            ;mem
+        sta rc7
+        dey
+        lda (ziyl),y            ;mem
+        sta rc6
+        dey
+        lda (ziyl),y            ;mem
+        sta rc5
+        ldy #2
+        lda (ziyl),y            ;mem
+        sta rc2
+        dey
+        lda (ziyl),y            ;mem
+        sta rc1
+        dey
+        lda (ziyl),y            ;mem
+        sta rc0
+        sty gp                  ; (grid pointer low byte stays 0)
+        rts
+rstore:
+        ldy #11
+        lda rc11
+        sta (ziyl),y            ;mem
+        dey
+        lda rc10
+        sta (ziyl),y            ;mem
+        dey
+        lda rc9
+        sta (ziyl),y            ;mem
+        dey
+        lda rc8
+        sta (ziyl),y            ;mem
+        dey
+        lda rc7
+        sta (ziyl),y            ;mem
+        dey
+        lda rc6
+        sta (ziyl),y            ;mem
+        dey
+        lda rc5
+        sta (ziyl),y            ;mem
+        ldy #1
+        lda rc1
+        sta (ziyl),y            ;mem
+        dey
+        lda rc0
+        sta (ziyl),y            ;mem
+        rts
+; leave the block: write the record back, drop SAB61's body frame, LDBFA
+todbfa: jsr rstore
+        pla
+        pla
+        jmp Z_DBFA
+
 ; ===========================================================================
 ; SAB47 - update all computer cars
         ZPROC $AB47
@@ -203,7 +291,7 @@ mul12:  asl a
         sta zixh
         lda #$0F
         sta $7603
-@l:     jsr Z_AB61
+c_AB47_l:     jsr Z_AB61
         clc
         lda ziyl
         adc #12
@@ -211,62 +299,64 @@ mul12:  asl a
         bcc :+
         inc ziyh
 :       dec $7603
-        bne @l
-        rts
+        bne c_AB47_l
+rt_317: rts
 
 ; ===========================================================================
 ; SAB61 - update one car (IY)
         ZPROC $AB61
         ldy #1
-        lda (ziyl),y
+        lda (ziyl),y            ;mem
         sta zc
         bmi :+
         jmp LB16A
 :       and #3
-        beq :+
-        rts
-:       ldy #10
-        lda (ziyl),y
+        bne rt_317
+:       jsr rload
+        jsr ab61
+        jmp rstore
+ab61:   lda rc10
         and #$20
         beq :+
-        jsr Z_BA04
+        jsr sba04
 :       lda #0
         sta $7604
-        ldy #5
-        lda (ziyl),y
+        lda rc5
         sta zb
-        ldy #7
-        lda (ziyl),y
+        ror a                   ; dirf: N = rec5 bit1 (sense), V = bit0 (axis)
+        ror a
+        ror a
+        sta dirf
+        lda rc7
         sta zh2
-        ldy #6
-        lda (ziyl),y
+        lda rc6
         sta zl2
         ldx #$FF
-        lda zb
-        and #2
-        beq :+
+        bit dirf
+        bpl :+
         ldx #1
 :       stx zd2
-        lda zb
-        lsr a
-        bcc LABB4
-        ldy #6                  ; transverse car
-        lda (ziyl),y
-        bit zc
-        bvc LAB9C
-        ldy #9
-        lda (ziyl),y
-        clc
-        adc #$64
-LAB9C:  sec
+        bvs LAB90
+        lda zh2
+        sec
+        sbc #$5C
+        sta ze
+        lda $7601
+        jmp LABBA
+LAB90:  lda rc6                 ; transverse: e = ((L - $66) >> 2) + 1 + t
+        sec
         sbc #$66
+        bit zc
+        bvc :+
+        lda rc9                 ; (rc9 + $64) - $66
+        sec
+        sbc #2
+:       lsr a
         lsr a
-        lsr a
-        clc
-        adc #1
+        sec
+        adc #0
         sta ze
         lda $7602
-        sta zd
         and #3
         cmp #3
         bne :+
@@ -274,13 +364,7 @@ LAB9C:  sec
 :       clc
         adc ze
         sta ze
-        lda zd
-        jmp LABBA
-LABB4:  lda zh2
-        sec
-        sbc #$5C
-        sta ze
-        lda $7601
+        lda $7602
 LABBA:  asl a
         asl a
         asl a
@@ -288,65 +372,49 @@ LABBA:  asl a
         ora ze
         asl a
         tax                     ; X = offset into D7575
-        sta ze
-        lda #0
-        sta zd
-        lda zb
-        lsr a
-        bcs LABF2
-        ldy #2
-        lda (ziyl),y
+        bit dirf
+        bvs LABF2
+        lda rc2
         and #2
-        beq LABE7
-        ldy #10
-        lda (ziyl),y
-        and #$20
-        beq :+
-        lda #0
-        beq LABF3
-:       ldy #2
-        lda (ziyl),y
-        and #4
-        beq :+
-        lda $7510
-        jmp LABF3
-:       lda $7511
-        jmp LABF3
-LABE7:  lda $7603
+        bne LABD2
+        lda $7603
         and #7
         bne LABF2
         lda #8
         bne LABF3
+LABD2:  lda rc10                ; special car
+        and #$20
+        eor #$20
+        beq LABF3
+        lda rc2                 ; bit2 ? D7510 : D7511
+        lsr a
+        lsr a
+        and #1
+        eor #1
+        tay
+        lda $7510,y
+        jmp LABF3
 LABF2:  lda $7575,x
 LABF3:  sta $7600
-        ldy $7576,x
-        tya
+        lda $7576,x
         bpl LAC02
-        lda zb
-        and #2
-        beq :+
-        tya
+        bit dirf
+        bpl LAC02
         eor #3
-        tay
-:       tya
 LAC02:  sta ze2
-        ldy #10
-        lda (ziyl),y
+        lda rc10
         lsr a
         bcc :+
         jmp LE833
-:       lda zb
-        lsr a
-        bcc :+
+:       bit dirf
+        bvc :+
         jmp LB5D7
 :       ldx #$2D
-        lda zb
-        and #2
-        beq :+
-        ldx #$2C
+        bit dirf
+        bpl :+
+        dex
 :       stx ZV_B100
-        ldy #0
-        lda (ziyl),y
+        lda rc0
         beq LAC48
         ldx zh2                 ; ghost lane
         inx
@@ -355,25 +423,28 @@ LAC02:  sta ze2
         beq :+
         dex
         dex
-:       lda zb
-        and #2
-        ldy zl2
-        jsr sb0f8
-        stx zd2
-        sty zc2
-        ldx gp+1
-        stx zb2
-        tax
+:       jsr look
         beq LAC48
         jsr sb106
         bne LAC48
-        lda $7600
-        bne LAC48
-        lda #1
-        sta $7600
-LAC48:  lda zb
+        jsr min1
+LAC48:  ldx zh2
+        jsr look
+        bne LAC6D
+        lda $7604
         and #2
-        ldx zh2
+        bne LAD43j
+        GET_R                   ; ld a,r ; and 0 (never taken)
+        lda rc10
+        bmi LAC7D
+LAD43j: jmp LAD43
+LAC6D:  jsr sb106
+        bne LAD43j
+        jsr min1
+        jmp LAC7D
+; look ahead in lane X (SB0F8): d' = closeness, c'/b' = hit cell, Z = clear
+look:   lda dirf
+        and #$80
         ldy zl2
         jsr sb0f8
         stx zd2
@@ -381,31 +452,22 @@ LAC48:  lda zb
         ldx gp+1
         stx zb2
         tax
-        bne LAC6D
-        lda $7604
-        and #2
-        beq :+
-        jmp LAD43
-:       GET_R                   ; ld a,r ; and 0 (never taken)
-        ldy #10
-        lda (ziyl),y
-        bmi LAC7D
-        jmp LAD43
-LAC6D:  jsr sb106
-        beq :+
-        jmp LAD43
-:       lda $7600
-        bne LAC7D
-        lda #1
-        sta $7600
+        rts
+; D7600 = max(D7600, 1)
+min1:   lda $7600
+        bne :+
+        inc $7600
+:       rts
 
 ; --- lane change decision -------------------------------------------------
-LAC7D:  ldy #0
-        lda (ziyl),y
+LACA9:  lda $7604               ; no lane change: just follow the obstacle
+        and #2
         beq :+
-        jmp LAD43
-:       ldy #2
-        lda (ziyl),y
+        jsr sb12f_p
+:       jmp LAD43
+LAC7D:  lda rc0
+        bne LAD43j
+        lda rc2
         and #2
         beq LAC9E
         lda $75F2
@@ -417,23 +479,18 @@ LAC7D:  ldy #0
         lda $75F1
         and #$0A
         beq LACC1
-LAC9E:  lda zl2
+LAC9E:  lda zl2                 ; lane changes only in two zones
         cmp #$50
         bcs LACB3
         cmp #$14
         bcs LACC1
-LACA9:  lda $7604
-        and #2
-        beq :+
-        jsr sb12f_p
-:       jmp LAD43
+        bcc LACA9
 LACB3:  sta ze
         lda $75F5
         clc
         adc #$78
         cmp ze
         bcs LACA9
-        clc
         adc #$3C
         cmp ze
         bcc LACA9
@@ -441,56 +498,45 @@ LACC1:  lda $7604
         sta zd
         and #2
         bne LACDF
-        ldy #10
-        lda (ziyl),y
-        and #$40
-        bne LACD6
-        lda ze2
-        and #2
-        bne LACDn
+        lda #1                  ; turning: right -> centre side, left -> kerb
+        bit rc10
+        bvs :+
         lda #2
-        bne LACEE
-LACD6:  lda ze2
-        and #1
-        bne LACDn
-        lda #0
-        beq LACEE
-LACDn:  jmp LAD43
-LACDF:  lda ze2
+:       tax
+        and ze2
+        bne LAD43
+        txa
+        and #2
+        bpl LACEE
+LACDF:  lda ze2                 ; obstacle: prefer the centre side
         and #1
         beq LACEE
 LACE6:  lda ze2
         and #2
-        beq :+
-        jmp LACA9
-:       lda #2
+        bne LACA9
+        lda #2
 LACEE:  sta ze
         eor zb
-        sta za2                 ; A' = side
+        sta za2                 ; side
         ldx zh2
         dex
         and #2
         bne :+
         inx
         inx
-:       ldy #2
-        lda (ziyl),y
+:       lda rc2
         and #2
         beq LAD08
         lda #4
         sta zb2
-        ldy #11
-        lda (ziyl),y
+        lda rc11
         cmp #4
         ldy zl2
         bcs LAD16
-LAD08:  ldy #5
-        lda (ziyl),y
-        and #2
-        beq :+
+LAD08:  lda #4
+        bit dirf
+        bpl :+
         lda #$14
-        bne :++
-:       lda #4
 :       clc
         adc zl2
         tay
@@ -498,229 +544,146 @@ LAD08:  ldy #5
         sta zb2
 LAD16:  jsr sb162
         beq LAD2E
-        ldy #2
-        lda (ziyl),y
+        lda rc2
         and #2
-        bne :+
-        jmp LACA9
-:       lda zd
+        beq jca9
+        lda zd
         and #2
-        bne :+
-        jmp LACA9
-:       lda ze
+        beq jca9
+        lda ze
         and #2
-        bne :+
-        jmp LACE6
-:       jmp LACA9
-LAD2E:  lda za2
+        beq LACE6
+jca9:   jmp LACA9
+LAD2E:  lda za2                 ; start the lane change
+        and #2
+        eor #2
+        asl a
+        asl a
+        ora #4
         sta t0
-        lda #0
-        sta za2
-        lda zc
-        ora #$0C
-        sta zc
-        lda t0
-        and #2
-        beq :+
         lda zc
         and #$F7
+        ora t0
         sta zc
-:       lda zc
-        ldy #1
-        sta (ziyl),y
+        sta rc1
         lda $7604
         ora #$10
         sta $7604
         jmp LB033
-
 ; --- zones along the lane: stop lines and the junction ----------------------
-LAD43:  ldx zl2
-        lda zb
-        and #2
-        beq :+
-        jmp LADEC
-:       txa
-        cmp #$32
-        bcs :+
-        jmp LB033
-:       cmp #$3A
+LAD43:  ldy #0
+        bit dirf
+        bpl :+
+        ldy #7
+:       lda zl2
+        cmp T_ZN+0,y
+        bcc j033
+        cmp T_ZN+1,y
         bcc LAD75
-        cmp #$68
-        bcs :+
-        jmp LB033
-:       sta ze
+        cmp T_ZN+2,y
+        bcc j033
+        sta ze
         lda $75F5
         clc
-        adc #$76
+        adc T_ZN+3,y
         cmp ze
-        bcc :+
-        jmp LAE23
-:       clc
-        adc #$24
+        bcs LAD5F
+        adc T_ZN+4,y
         cmp ze
-        bcc :+
-        jmp LB033
-:       clc
+        bcs j033
         adc #8
         cmp ze
-        bcs :+
-        jmp LB033
-:       sta za2
+        bcc j033
+        adc T_ZN+5,y            ; (C set)
+        sta za2                 ; stop line B
         lda $75FB
         jmp LAD7C
-LAD75:  sta ze
-        lda #$39
+LAD5F:  bit dirf
+        bpl :+
+        jmp LAF96
+:       jmp LAE23
+LAD75:  sta ze                  ; stop line A
+        lda T_ZN+6,y
         sta za2
         lda $75FC
 LAD7C:  ora #0
-        bmi :+
-        jmp LB033
-:       ldy #1
-        lda (ziyl),y
+        bpl j033
+        lda rc1
         and #4
         beq LAD90
-        ldy #0
-        lda (ziyl),y
+        lda rc0
         bne LAD90
-        ldy #1
-        lda (ziyl),y
+        lda rc1
         and #$FB
-        sta (ziyl),y
+        sta rc1
 LAD90:  lda za2
         sec
         sbc #7
         cmp ze
         bne LADA3
-        ldy #11
-        lda (ziyl),y
+        lda rc11
         cmp #3
-        bcc :+
-        jmp LB033
-:       lda #0
-        sta (ziyl),y
+        bcs j033
+        lda #0
+        sta rc11
         rts
+j033:   jmp LB033
 ; brake
-LADA3:  ldy #11
-        lda (ziyl),y
-        sec
-        sbc #1
+LADA3:  ldx rc11
+        dex
         bmi LADDF
         bne LADB5
         lda $7600
         beq LADBF
-        jmp LB036
-LADB5:  cmp #4
+        bne j036
+LADB5:  cpx #4
         bcc LADBF
-        lda (ziyl),y
-        sec
-        sbc #2
-        sta (ziyl),y
-LADBF:  ldy #11
-        lda (ziyl),y
-        sec
-        sbc #1
-        sta (ziyl),y
+        dec rc11
+        dec rc11
+LADBF:  dec rc11
         jmp LB036
 ; decelerate to a stop
-LADC5:  ldy #11
-        lda (ziyl),y
-        bne :+
-        rts
-:       sec
-        sbc #1
-        sta (ziyl),y
-        bne :+
-        rts
-:       sec
-        sbc #1
-        sta (ziyl),y
-        jmp LB036
-LADDF:  lda $7600
+LADC5:  lda rc11
         beq :+
-        ldy #11
-        lda (ziyl),y
-        clc
-        adc #1
-        sta (ziyl),y
-:       jmp LB036
-
-LADEC:  txa
-        cmp #$26
-        bcs :+
-        jmp LB033
-:       cmp #$2E
-        bcc LAE19
-        cmp #$56
-        bcs :+
-        jmp LB033
-:       sta ze
-        lda $75F5
-        clc
-        adc #$61
-        cmp ze
-        bcc :+
-        jmp LAF96
-:       clc
-        adc #$26
-        cmp ze
-        bcc :+
-        jmp LB033
-:       clc
-        adc #8
-        cmp ze
-        bcs :+
-        jmp LB033
-:       clc
-        adc #7
-        sta za2
-        lda $75FB
-        jmp LAD7C
-LAE19:  sta ze
-        lda #$34
-        sta za2
-        lda $75FC
-        jmp LAD7C
-
+        dec rc11
+        beq :+
+        dec rc11
+        jmp LB036
+:       rts
+LADDF:  lda $7600
+        beq j036
+        inc rc11
+j036:   jmp LB036
 ; --- junction approach, dir 0 (A = F5+$76, ze = L) --------------------------
 LAE23:  sta t1
-        ldy #10
-        lda (ziyl),y
+        lda rc10
         sta zl
         bpl LAE3B
         lda zc
         and #4
         bne LAE3B
-        lda zc
+        lda zc                  ; indicator on
         ora #4
         and #$F7
         bit zl
         bvc :+
         ora #8
 :       sta zc
-        ldy #1
-        sta (ziyl),y
+        sta rc1
 LAE3B:  lda $75F2
         lsr a
-        bcc :+
-        jmp LAF65
-:       lda $75EC
+        bcs jaf65
+        lda $75EC
         lsr a
         bcc LAE49
         jmp LAEE8
 LAE49:  lda zl
         and #$20
-        beq :+
-        jmp LADC5
-:       bit zl
-        bmi :+
-        jmp LB033
-:       ldy #11
-        lda (ziyl),y
-        cmp #7
-        bcc :+
-        lda #6
-        sta (ziyl),y
-:       lda $75F5
+        bne jadc5
+        bit zl
+        bpl j033b
+        jsr cap6
+        lda $75F5
         sec
         sbc #4
         tax
@@ -733,42 +696,38 @@ LAE49:  lda zl
         tax
 :       lda ze2
         and #1
-        jmp LAE76
+        bpl LAE76
 LAE74:  lda ze2
         and #2
 LAE76:  bne LAEA6x
         lda $75F1
         and #2
         bne LAE98
-LAE7F:  ldy #10
-        lda (ziyl),y
+LAE7F:  lda rc10                ; abort the turn
         and #$7F
-        sta (ziyl),y
-        ldy #1
-        lda (ziyl),y
+        sta rc10
+        lda rc1
         and #$FB
-        sta (ziyl),y
+        sta rc1
         bit zl
-        bvs :+
-        jmp LB033
-:       lda zl
+        bvc j033b
+        lda zl
         and #$10
-        beq :+
-        jmp LB033
-:       lda $75FD
+        bne j033b
+        lda $75FD
         and #$FE
         sta $75FD
-        jmp LB033
+j033b:  jmp LB033
+jadc5:  jmp LADC5
+jaf65:  jmp LAF65
 LAE98:  lda $7602
-        and #2
-        beq LAEA4
-        lda $7602
-        lsr a
-        bcc LAEA6x
-LAEA4:  txa
-        sec
-        sbc #4
-        tax
+        and #3
+        cmp #2
+        beq LAEA6x
+        dex
+        dex
+        dex
+        dex
 LAEA6x: txa
         clc
         adc #$67
@@ -779,181 +738,118 @@ LAEA8:  sec
         lda zl
         and #$10
         beq LAEBE
-        lda $75FD
-        lsr a
-        bcc :+
-        jmp LADC5
-:       ldy #10
-        lda (ziyl),y
-        and #$EF
-        sta (ziyl),y
-        lda $75FD
-        ora #1
-        sta $75FD
+        jsr token
+        bcs jadc5
 LAEBE:  cpx #$F8
-        bcc :+
-        jmp LADA3
-:       jmp LB033
-LAEC6:  ldy #0
-        lda (ziyl),y
-        beq LAECC
-        jmp LAE7F
-LAECC:  lda zc
-        ora #4
+        bcc j033b
+jada3:  jmp LADA3
+LAEC6:  lda rc0
+        bne LAE7F
+LAECC:  lda zc                  ; start the turn
         and #$F7
-        sta zc
-        ldy #10
-        lda (ziyl),y
-        ora #3
-        sta (ziyl),y
-        ldy #11
-        lda #0
-        sta (ziyl),y
+        ora #4
         bit zl
         bvc :+
-        lda zc
         ora #8
-        sta zc
-:       lda zc
-        ldy #1
-        sta (ziyl),y
+:       sta zc
+        sta rc1
+        lda rc10
+        ora #3
+        sta rc10
+        lda #0
+        sta rc11
         jmp LE833
-
 ; give-way check (D75EC bit0; never seen in play)
 LAEE8:  lda t1
         sec
         sbc #$0E
         cmp ze
-        bcs :+
-        jmp LADA3
-:       beq LAEF1
+        bcc jada3
+        beq LAEF1
         jmp LAE49
 LAEF1:  lda $75E7
         and #$1E
-        beq :+
-        jmp LAF3E
-:       lda $75F5
+        bne LAF3E
+        lda $75F5
         lsr a
         lsr a
         sec
         sbc #1
-        tax
-        ldy #10
-        lda (ziyl),y
+        bit rc10
         bpl LAF11
-        txa
-        lsr a
+        bvs :+
+        lda #1
+        bne LAF11
+:       lsr a
         clc
         adc #1
-        tax
-        lda (ziyl),y
-        and #$40
-        bne LAF11
-        ldx #1
-LAF11:  lda zb
-        sta t0
-        pha                     ; push bc
-        lda zc
-        pha
-        stx zb
-        lda #4
-        sta zc
-        ldy #7
-        lda (ziyl),y
-        sta zh
+LAF11:  sta cnt
+        lda zl2
+        sta svl
+        lda zh2
+        sta svh
         lda #$67
-        sta zl
-        lda t0
-        and #2
-        bne LAF26
+        ldx #4
+        bit dirf
+        bmi :+
         lda $75F5
         clc
         adc #$61
-        sta zl
-        lda #$FC
-        sta zc
-LAF26:  lda zb                  ; push bc ; push hl
-        pha
-        lda zc
-        pha
-        lda zl
-        pha
-        lda zh
-        pha
-        dec zh
-        jsr exx_
-        jsr sb4a5
-        php
-        jsr exx_
-        plp
-        bne LAF5D
-        pla                     ; pop hl ; push hl
-        sta zh
-        pla
-        sta zl
-        pha
-        lda zh
-        pha
-        inc zh
-        jsr exx_
-        jsr sb502
-        php
-        jsr exx_
-        plp
-        bne LAF5D
-        pla                     ; pop hl ; pop bc
-        sta zh
-        pla
-        sta zl
-        pla
-        sta zc
-        pla
-        sta zb
-        lda zc
+        ldx #$FC
+:       sta t2
+        stx nsub
+LAF26:  ldx #1
+        ldy rc7
+        dey
+        jsr gwsc
+        bne LAF60
+        ldx #$FF
+        ldy rc7
+        iny
+        jsr gwsc
+        bne LAF60
+        lda t2
         clc
-        adc zl
-        sta zl
-        dec zb
+        adc nsub
+        sta t2
+        dec cnt
         bne LAF26
-        pla                     ; pop bc
-        sta zc
-        pla
-        sta zb
-LAF3E:  ldy #11
-        lda #2
-        sta (ziyl),y
-        ldy #10
-        lda (ziyl),y
+        lda svl
+        sta zl2
+        lda svh
+        sta zh2
+LAF3E:  lda #2
+        sta rc11
+        lda rc10
         and #$10
         beq LAF56
-        lda $75FD
-        lsr a
+        jsr token
         bcs LAF60
-        lda (ziyl),y
-        and #$EF
-        sta (ziyl),y
-        lda $75FD
-        ora #1
-        sta $75FD
 LAF56:  lda $7604
         and #$FE
         sta $7604
         jmp LB036
-LAF5D:  pla                     ; pop af ; pop af ; pop bc
-        pla
-        pla
-        pla
-        pla
-        sta zc
-        pla
-        sta zb
-LAF60:  ldy #11
-        lda #0
-        sta (ziyl),y
+LAF60:  lda #0
+        sta rc11
         rts
-
-LAF65:  ldy #2                  ; (ix+17) bit0 rule set, dir 0
-        lda (ziyl),y
+gwsc:   sty zh2                 ; scan across at (Y, t2): X = 1 (+H) / $FF (-H)
+        lda t2
+        sta zl2
+        txa
+        bmi :+
+        jmp sb4a5
+:       jmp sb502
+cap6:   lda rc11
+        cmp #7
+        bcc :+
+        lda #6
+        sta rc11
+:       rts
+LAF65:  lda t1                  ; (ix+17) bit0 rule set, dir 0 (never seen)
+        sec
+        sbc #$0E
+        sta t0
+        lda rc2
         and #2
         bne LAF72
         lda $75FA
@@ -961,58 +857,63 @@ LAF65:  ldy #2                  ; (ix+17) bit0 rule set, dir 0
         bne LAF80
 LAF72:  lda zl
         and #$10
-        bne :+
-        jmp LAE49
-:       lda t1
-        sec
-        sbc #$0E
+        beq jae49
+        lda t0
         cmp ze
-        bcs :+
-        jmp LADA3
-:       jmp LAE49
-LAF80:  lda t1
-        sec
-        sbc #$0E
+        bcc jada3b
+        bcs jae49
+LAF80:  lda t0
         cmp ze
-        bcs :+
-        jmp LADA3
-:       beq :+
-        jmp LAE49
-:       ldy #11
-        lda (ziyl),y
+        bcc jada3b
+        bne jae49
+stp3:   lda rc11
         cmp #3
-        bcc :+
-        jmp LADA3
-:       lda #0
-        sta (ziyl),y
+        bcs jada3b
+        lda #0
+        sta rc11
         rts
-
+jae49:  jmp LAE49
+jada3b: jmp LADA3
+jafa7:  jmp LAFA7
+LB003:  lda rc2                 ; (ix+17) bit0 rule set, dir 2 (never seen)
+        and #2
+        bne LB00F
+        lda $75FA
+        and #8
+        bne LB01D
+LB00F:  lda zl
+        and #$10
+        beq jafa7
+        lda #$62
+        cmp ze
+        bcc jafa7
+        bcs jada3b
+LB01D:  lda #$62
+        cmp ze
+        bcc jafa7
+        bne jada3b
+        beq stp3
+LAFF8:  lda #$62
+        cmp ze
+        bcc jafa7
+        bne jada3b
+        jmp LAEF1
 ; --- junction approach, dir 2 (ze = L) ---------------------------------------
-LAF96:  ldy #10
-        lda (ziyl),y
+LAF96:  lda rc10
         sta zl
         lda $75F2
         lsr a
-        bcc :+
-        jmp LB003
-:       lda $75EC
+        bcs LB003
+        lda $75EC
         and #$20
-        beq LAFA7
-        jmp LAFF8
+        bne LAFF8
 LAFA7:  lda zl
         and #$20
-        beq :+
-        jmp LADC5
-:       bit zl
-        bmi :+
-        jmp LB033
-:       ldy #11
-        lda (ziyl),y
-        cmp #7
-        bcc :+
-        lda #6
-        sta (ziyl),y
-:       lda $75F5
+        bne jadc5b
+        bit zl
+        bpl j033c
+        jsr cap6
+        lda $75F5
         sec
         sbc #4
         lsr a
@@ -1022,7 +923,7 @@ LAFA7:  lda zl
         ldx #0
         lda ze2
         and #2
-        jmp LAFD6
+        bpl LAFD6
 LAFCD:  bit $7602
         bpl :+
         ldx #0
@@ -1031,18 +932,16 @@ LAFCD:  bit $7602
 LAFD6:  bne LAFF0
         lda $75F1
         and #8
-        bne LAFE2
+        bne :+
         jmp LAE7F
-LAFE2:  lda $7602
-        and #2
-        beq LAFEE
-        lda $7602
-        lsr a
-        bcc LAFF0
-LAFEE:  txa
-        clc
-        adc #4
-        tax
+:       lda $7602
+        and #3
+        cmp #2
+        beq LAFF0
+        inx
+        inx
+        inx
+        inx
 LAFF0:  txa
         clc
         adc #$67
@@ -1051,97 +950,49 @@ LAFF0:  txa
         sta ze
         txa
         jmp LAEA8
-LAFF8:  lda #$62
-        cmp ze
-        bcs :+
-        jmp LAFA7
-:       beq :+
-        jmp LADA3
-:       jmp LAEF1
-LB003:  ldy #2
-        lda (ziyl),y
-        and #2
-        bne LB00F
-        lda $75FA
-        and #8
-        bne LB01D
-LB00F:  lda zl
-        and #$10
-        bne :+
-        jmp LAFA7
-:       lda #$62
-        cmp ze
-        bcs :+
-        jmp LAFA7
-:       jmp LADA3
-LB01D:  lda #$62
-        cmp ze
-        bcs :+
-        jmp LAFA7
-:       beq :+
-        jmp LADA3
-:       ldy #11
-        lda (ziyl),y
-        cmp #3
-        bcc :+
-        jmp LADA3
-:       lda #0
-        sta (ziyl),y
-        rts
-
+jadc5b: jmp LADC5
+j033c:  jmp LB033
 ; --- move along the lane ------------------------------------------------------
-LB033:  jsr Z_B9B1
-LB036:  ldy #11
-        lda (ziyl),y
+LB033:  jsr sb9b1
+LB036:  lda rc11
         bne :+
         rts
-:       jsr Z_B905
-        ldy #1
-        lda (ziyl),y
+:
+        jsr b905
+        lda rc1
         sta zc
-        jsr Z_B3B3
-        ldy #11
-        lda (ziyl),y
-        tax
-        ldy #2
-        lda (ziyl),y
+        jsr b3b3
+        ldx rc11
+        lda rc2                 ; special cars never crawl at 1
         and #2
         beq :+
         cpx #1
         bne :+
-        ldx #2
+        inx
 :       stx zc2
         txa
         lsr a
         bcc LB05E
         tax
-        lda $75F8
+        lda $75F8               ; odd speed: +1 on every other pass
         lsr a
-        bcc :+
-        inx
-:       txa
-LB05E:  cmp #0
-        bne :+
-        jmp LB09E
-:       tax
+        txa
+        adc #0
+LB05E:  beq LB09E
+        tax
         lda $7604
         lsr a
         bcc :+
         ldx #0
-:       ldy #5
-        lda (ziyl),y
-        and #2
-        bne :+
-        txa
+:       txa
+        bit dirf
+        bmi :+
         eor #$FF
         clc
         adc #1
-        tax
-:       txa
-        clc
+:       clc
         adc zl2
-        ldy #6
-        sta (ziyl),y
+        sta rc6
         sta zl2
         sec
         sbc #6
@@ -1151,118 +1002,97 @@ LB05E:  cmp #0
         adc #$C2
         cmp zb2
         bcs LB084
-        jmp Z_DBFA
+        jmp todbfa
 LB084:  lda $7604
         and #$10
         bne LB090
-        ldy #0
-        lda (ziyl),y
+        lda rc0
         beq LB09E
-LB090:  lda zc2
-        cmp #3
+LB090:  ldx zc2
+        cpx #3
         lda #1
-        bcc :+
-        lda #2
-:       ldx zh2
+        adc #0
+        ldx zh2
         jsr sb0aa
         stx zh2
-        txa
-        ldy #7
-        sta (ziyl),y
-LB09E:  lda #$1C
-        sec
-        sbc $7603
+        stx rc7
+LB09E:  jsr owncode
         sta za2
-        ; fall into LB82C
-
 ; LB82C: draw the car at zl2/zh2; if blocked, restore the backup and redraw.
-        ZPROC $B82C
-        jsr Z_B412
-        bne :+
-        rts
-:       jsr Z_B913
+LB82C:  jsr b412
+        beq mv2_r
+        jsr b913
         lda ZV_B8F9+6
         sta zl2
         lda ZV_B8F9+7
         sta zh2
-        jmp Z_B412
+        jmp b412
+mv2_r:  rts
 
 ; ===========================================================================
 ; SB0AA - one step of a lane change.  Internal: X = H, A = step.  Out: X = H.
         ZPROC $B0AA
+        pha
+        jsr rload
+        pla
         ldx zh
         jsr sb0aa
         stx zh
-        txa
+        jsr rstore
+        lda zh
         rts
-sb0aa:  sta t0                  ; b = step
-        ldy #1
-        lda (ziyl),y
-        sta t1
-        and #$20
-        beq :+
-        lda t1
-        eor #$FF
-        sta t1
-:       lda t1
+sb0aa:  sta t0                  ; step
+        lda rc1                 ; bit3 ^ bit5: towards the centre line
+        lsr a
+        lsr a
+        eor rc1
         and #8
         bne LB0D2
-        ldy #0
-        lda (ziyl),y
+        lda rc0
         bne LB0CB
         sec
         sbc t0
         and #7
         sta t2
-        ldy #1
-        lda (ziyl),y
+        lda rc1
         and #$20
         beq :+
         inx
-        jmp :++
+        inx
 :       dex
-:       lda t2
-        jmp LB0E8
+        lda t2
+        bpl LB0E8
 LB0CB:  sec
         sbc t0
         beq LB0E3
         bcs LB0E8
         bcc LB0E3
-LB0D2:  ldy #0
-        lda (ziyl),y
+LB0D2:  lda rc0
         clc
         adc t0
-        sta t2
-        and #8
-        bne :+
-        lda t2
-        jmp LB0E8
-:       ldy #1
-        lda (ziyl),y
+        cmp #8
+        bcc LB0E8
+        lda rc1
         and #$20
         beq :+
         dex
-        jmp LB0E3
+        dex
 :       inx
-LB0E3:  ldy #1
-        lda (ziyl),y
+LB0E3:  lda rc1
         and #$FB
-        sta (ziyl),y
+        sta rc1
         lda #0
-LB0E8:  ldy #0
-        sta (ziyl),y
-        ldy #1
-        lda (ziyl),y
+LB0E8:  sta rc0
+        lda rc1
         and #$DF
         cpx #$60
         bcc :+
         ora #$20
-:       sta (ziyl),y
+:       sta rc1
         rts
-
 ; SB0F8 - look ahead 16 cells.  X = H, Y = L, A = 0 -> start at L-3.
 ; LB0FF: X = count, Y = L, gp+1 = H.  Out: Z = clear (A=0); NZ: A = cell,
-; X = count left (the original B), Y = L of the hit, gp+1 = H.
+; X = count left (the original B), Y = L of the hit, gp+1 = H.  (gp = 0)
 sb0f8:  stx gp+1
         cmp #0
         bne :+
@@ -1270,31 +1100,30 @@ sb0f8:  stx gp+1
         dey
         dey
 :       ldx #16
-lb0ff:  lda #0
-        sta gp
-        lda ZV_B100
+lb0ff:  lda ZV_B100
         cmp #$2D
-        beq @dec
+        beq lbf_dec
         cmp #$2C
-        beq @inc
-@nop:   lda (gp),y
-        bne @r
+        beq lbf_inc
+:       lda (gp),y
+        bne lbf_r
         dex
-        bne @nop
+        bne :-
         rts
-@dec:   dey
+lbf_dec:
+        dey
         lda (gp),y
-        bne @r
+        bne lbf_r
         dex
-        bne @dec
-@r:     rts
-@inc:   iny
+        bne lbf_dec
+lbf_r:  rts
+lbf_inc:
+        iny
         lda (gp),y
-        bne @r
+        bne lbf_r
         dex
-        bne @inc
+        bne lbf_inc
         rts
-
 ; SB106 - identify the obstacle at (zb2,zc2), closeness zd2; adapt D7600.
 ; Out: zl/zh = obstacle record+1, Z/NZ as the original.
 sb106:  lda $7604
@@ -1322,23 +1151,20 @@ sb106:  lda $7604
         sta zh2
         pla
         sta zl2
-        lda zd2
-        cmp #$0E
+        lda #1
+        ldx zd2
+        cpx #$0E
         bcc :+
-        lda $7604
-        ora #1
+        ora $7604
         sta $7604
-        lda zd2
-:       cmp #9
+:       cpx #9
         bcs sb12f_p
         ldy #0
         lda (zl),y
         and #1
         bne sb12f_p
         rts
-
 ; SB12F - follow the obstacle (record+1 in zl/zh, or tp for sb12f)
-        ZPROC $B12F
 sb12f_p:
         lda zl
         sta tp
@@ -1346,183 +1172,169 @@ sb12f_p:
         sta tp+1
 sb12f:  ldy #4
         lda (tp),y
-        ldy #5
-        cmp (ziyl),y
+        cmp rc5
         bne LB159
         ldy #10
         lda (tp),y
-        sta t0
-        lda $7600
-        cmp t0
-        bcs :+
-        ldy #0                  ; already slower: ret c
-        lda (tp),y
-        and #1
-        rts
-:       lda t0
+        cmp $7600
+        beq :+
+        bcs fo_z                ; already slower
+:       tax
         beq LB151
-        sec
-        sbc #1
-        bne LB151
-        lda #1
+        dex
+        bne :+
+        inx
+:       txa
 LB151:  sta $7600
-        ldy #0
+fo_z:   ldy #0
         lda (tp),y
         and #1
         rts
 LB159:  lda #1
         sta $7600
         rts
-
 ; SB162 - are these cells free: X = H, Y = L, zb2 = count.  Z = free.
 sb162:  stx gp+1
-        lda #0
-        sta gp
         ldx zb2
 :       lda (gp),y
-        bne @r
+        bne :+
         dey
         dex
         bne :-
         lda #0
-@r:     rts
-
+:       rts
 ; ===========================================================================
 ; LB16A - spawn a car into an empty slot
 LB16A:  lda $75F8
         and #$0A
-        beq :+
-        rts
-:       GET_R
+        bne sr00
+        GET_R
         sta zd
         and #$0C
-        beq :+
-        rts
-:       lda zd
+        bne sr00
+        jsr rload
+        jsr b16a
+        jmp rstore
+sr00:   rts
+b16a:   lda zd
         lsr a
         lsr a
         lsr a
         lsr a
         and #3
-        sta t0
-        ldy #2
-        lda (ziyl),y
+        tax                     ; X = random direction
+        lda rc2
         and #2
         beq LB198
-        lda (ziyl),y
+        lda rc2                 ; special car: only the hit-car, rarely
         and #4
-        beq :+
-        rts
-:       lda $75F2
+        bne sr00
+        lda $75F2
         lsr a
-        bcc :+
-        rts
-:       lda $7611
-        bne :+
-        rts
-:       lda $75F8
+        bcs sr0
+        lda $7611
+        beq sr0
+        lda $75F8
         and #$1F
-        beq :+
-        rts
-:       sta t0
-LB198:  lda t0
-        ldy #5
-        sta (ziyl),y
-        ldx $7606
-        stx zb
+        bne sr0
+        tax
+LB198:  stx rc5
+        ldy $7606
+        sty zb
+        txa
         lsr a
         bcc :+
         jmp LB2D8
-:       lsr a
-        bcc :+
-        jmp LB2AC
-:       lda $75F5
+:
+        lsr a
+        bcs LB2AC
+        lda $75F5
         clc
         adc #$C7
-        ldy #6
-        sta (ziyl),y
-        tax
-        lda zb
+        sta rc6
+        sta zc
+        tya
         and #8
-        beq :+
-        rts
-:       stx zc
+        bne sr0
         lda $7607
         and #7
         cmp #7
-        bne Z_B1BC
-        rts
-
-        ZPROC $B1BC
-        lda $7601
+        beq sr0
+b1bc:   lda $7601
         jsr sb387
-        beq :+
-        rts
-:       tax
+        bcs sr0
+        tax
         lda #0
         cpx #3
         bne :+
         lda #$20
-:       ldy #1
-        sta (ziyl),y
+:       sta rc1
         txa
         clc
         adc #$5D
-        ldy #7
-        sta (ziyl),y
+        sta rc7
         sta zh
-        ldy #6
-        lda (ziyl),y
+        lda rc6
         sta zl
-        ldy #2
-        lda (ziyl),y
+        lda rc2
         and #2
         beq LB1FA
-        lda $7793
-        and #$40
-        beq :+
-        rts
-:       lda $7799
+        bit $7793               ; hit-car: just behind the player
+        bvs sr0
+        lda $7799
         sta zh
         lda $7798
-        sta zl
         cmp #$8C
-        bcs :+
-        rts
-:       clc
-        adc #6
+        bcc sr0
+        adc #5                  ; (C set) +6
         sta zl
-        ldy #7
         lda zh
-        sta (ziyl),y
-        lda $75D6
-        cmp zh
-        bne :+
-        rts
-:       lda zh
+        sta rc7
+        cmp $75D6
+        beq sr0
         cmp #$60
         bcc LB1FA
-        rts
-LB1FA:  ldy #6
-        lda zl
-        sta (ziyl),y
-        sta ze
+sr0:    rts
+; LB2AC - spawn an oncoming (dir 2) car
+LB2AC:  lda zb
+        and #2
+        bne sr0
+        lda rc5
+        sta zc
+        lda $7607
+        and #$0D
+        cmp #$0D
+        beq sr0
+        lda $7601
+        jsr sb387
+        bcs sr0
+        tax
+        lda #$A0
+        cpx #3
+        bne :+
+        lda #$80
+:       sta rc1
+        txa
+        eor #$FF
+        sec
+        adc #$62
+        sta rc7
+        sta zh
+        lda #6
+        sta zl
+LB1FA:  lda zl
+        sta rc6
+        tay
         lda zh
         sta gp+1
-        lda #0
-        sta gp
-        ldy zl
         ldx #4
 :       lda (gp),y
-        beq :+
-        rts
-:       dey
+        bne sr0
+        dey
         dex
-        bne :--
-        ldy ze
-        lda #$1C
-        sec
-        sbc $7603
+        bne :-
+        ldy rc6
+        jsr owncode
         sta (gp),y
         lda #$FF
         dey
@@ -1534,205 +1346,95 @@ LB1FA:  ldy #6
         sty zl
         lda #0
         sta zb
-        ldy #0
-        sta (ziyl),y
-        ldy #10
-        sta (ziyl),y
-        ldy #1
-        lda (ziyl),y
+        sta rc0
+        sta rc10
+        lda rc1
         ora #$80
-        sta (ziyl),y
-        ldy #11
+        sta rc1
         lda #3
-        sta (ziyl),y
-        ldy #2
-        lda (ziyl),y
+        sta rc11
+        lda rc2
         and #2
-        beq Z_B241
+        beq b241
         jsr Z_BA5F
         .byte $38,$0B,$8A,"CLOSING IN"
         lda $779D
         clc
         adc #1
-        ldy #11
-        sta (ziyl),y
-        ; fall into SB241
-
+        sta rc11
 ; SB241 - choose what to do at the next junction -> rec+10
-        ZPROC $B241
-        ldx $7607
-        ldy #5
-        lda (ziyl),y
+b241:   ldx $7607
+        ldy rc5
         beq LB257
-        tay
-@l:     txa
+:       txa                     ; rotate the low nibble into the car's frame
         asl a
         tax
         and #$10
         beq :+
         txa
-        and #$EF
-        ora #1
+        eor #$11
         tax
 :       dey
-        bne @l
+        bne :--
 LB257:  stx zb
-        lda ZV_9560
-        jsr sb265
-        ldy #10
-        sta (ziyl),y
-        lda ZV_9560
-        rts
-
-; SB265 - A = random, zb = blocked mask -> A = the turn code
-sb265:  sta t0
-        and #4
-        bne LB288
-        lda zb
-        and #2
-        bne :+
-        lda #0
-        rts
-:       lda t0
-        and #8
-        beq LB27D
-        lda zb
-        and #4
-        bne :+
-        lda #$80
-        rts
-:       lda zb
-        and #1
-        bne :+
-        lda #$D0
-        rts
-:       lda #$20
-        rts
-LB27D:  lda zb
-        and #1
-        bne :+
-        lda #$D0
-        rts
-:       lda zb
-        and #4
-        bne :+
-        lda #$80
-        rts
-:       lda #$20
-        rts
-LB288:  lda t0
-        and #8
-        bne LB29E
-        lda zb
-        and #4
-        bne :+
-        lda #$80
-        rts
-:       lda zb
-        and #1
-        bne LB29A
-        lda #$D0
-        rts
-LB29A:  lda zb
-        and #2
-        beq :+
-        lda #$20
-        rts
-:       lda #0
-        rts
-LB29E:  lda zb
-        and #1
-        bne :+
-        lda #$D0
-        rts
-:       lda zb
-        and #4
-        bne LB29A
-        lda #$80
-        rts
-
-; LB2AC - spawn an oncoming (dir 2) car
-LB2AC:  lda zb
-        and #2
-        beq :+
-        rts
-:       ldy #5
-        lda (ziyl),y
-        sta zc
-        lda $7607
-        and #$0D
-        cmp #$0D
-        bne :+
-        rts
-:       lda $7601
-        jsr sb387
-        beq :+
-        rts
-:       tax
-        lda #$A0
-        cpx #3
-        bne :+
-        lda #$80
-:       ldy #1
-        sta (ziyl),y
+        lda ZV_9560             ; SB265 (table)
+        and #$0C
+        asl a
+        sta t0
         txa
-        eor #$FF
-        sec
-        adc #$62
-        ldy #7
-        sta (ziyl),y
-        sta zh
-        lda #6
-        sta zl
-        jmp LB1FA
-
+        and #7
+        ora t0
+        tay
+        lda T_B265,y
+        sta rc10
+        lda ZV_9560
+sr2:    rts
 ; LB2D8 - spawn a car at the far end of a side street (dir 1/3)
-LB2D8:  ldy #10
-        lda #0
-        sta (ziyl),y
-        ldy #5
-        lda (ziyl),y
+LB2D8:  lda #0
+        sta rc10
+        lda rc5
         and #2
-        beq :+
-        jmp LB36C
-:       lda zb
+        bne LB36C
+        lda zb
         and #4
-        beq :+
-        rts
-:       jsr Z_B241
+        bne sr2
+        jsr b241
         lda $7602
         jsr sb387
-        beq :+
-        rts
-:       pha
-        ldy #1
-        lda #$40
-        sta (ziyl),y
-        pla
+        bcs sr2
+        ldx #$40
+        stx rc1
         ldx #<$FD60
         ldy #>$FD60
+        bne LB2F5
+LB36C:  lda zb
+        lsr a
+        bcs sr2
+        jsr b241
+        lda $7602
+        jsr sb387
+        bcs sr2
+        ldx #$60
+        stx rc1
+        eor #$FF
+        sec
+        adc #5
+        ldx #<$FEBB
+        ldy #>$FEBB
 LB2F5:  stx ze
         sty zd
         sta t0
-        ldy #10
-        lda (ziyl),y
+        lda rc10
         bpl LB309
+        ldx #4                  ; left turn: lane bit2, right: bit1
         and #$40
-        beq LB306
-        lda tent
-        and #2
-        bne LB309
-        rts
-LB306:  lda tent
-        and #4
-        bne LB309
-        rts
-LB309:  lda $7602
-        and #3
-        cmp #3
-        bne :+
-        lda #2
-:       sta t1
+        beq :+
+        ldx #2
+:       txa
+        and tent
+        beq sr1
+LB309:  jsr tval
+        sta t1
         lda t0
         sec
         sbc t1
@@ -1740,100 +1442,53 @@ LB309:  lda $7602
         asl a
         clc
         adc #5
-        ldy #9
-        sta (ziyl),y
+        sta rc9
         jsr mul12
         clc
         adc ze
         sta zl
+        sta rc6
         txa
         adc zd
         sta zh
-        ldy #7
-        sta (ziyl),y
-        ldy #6
-        lda zl
-        sta (ziyl),y
+        sta rc7
         jsr map_z
         ldx #$F4
         jsr p4base
         jsr or4
-        bne @r
-        ldy #5
-        lda (ziyl),y
-        and #2
-        bne @m
-        clc
-        lda zl
-        adc #1
-        sta gl
-        lda zh
-        adc #0
-        jmp @n
-@m:     sec
-        lda zl
-        sbc #1
-        sta gl
-        lda zh
-        sbc #0
-@n:     sta gh
-        jsr map_g
-        ldx #$F4
-        jsr p4base
-        jsr or4
-        bne @r
-        jsr map_z
-        ldx #$F4
-        jsr p4base
-        lda #$1C
-        sec
-        sbc $7603
-        ldy o3
-        sta (mp),y
-        lda #$FF
-        ldy o2
-        sta (mp),y
-        ldy o1
-        sta (mp),y
-        ldy #0
-        sta (mp),y
-        ldy #1
-        lda (ziyl),y
-        ora #$80
-        sta (ziyl),y
-        ldy #8
-        lda #$0B
-        sta (ziyl),y
-        ldy #11
+        bne sr1
+        ldx #0                  ; the neighbouring column (+1 dir 1, -1 dir 3)
         lda #1
-        sta (ziyl),y
-        ldy #0
-        lda #0
-        sta (ziyl),y
-@r:     rts
-LB36C:  lda zb
-        lsr a
+        ldy rc5
+        cpy #2                  ; (rc5 is 1 or 3 here)
         bcc :+
-        rts
-:       jsr Z_B241
-        lda $7602
-        jsr sb387
-        beq :+
-        rts
-:       tax
-        ldy #1
-        lda #$60
-        sta (ziyl),y
+        lda #$FF
+        tax
+:       clc
+        adc mp
+        sta mp
         txa
-        eor #$FF
-        sec
-        adc #5
-        ldx #<$FEBB
-        ldy #>$FEBB
-        jmp LB2F5
-
+        adc mp+1
+        sta mp+1
+        jsr or4
+        bne sr1
+        jsr map_z
+        ldx #$F4
+        jsr p4base
+        jsr owncode
+        jsr put4
+        lda rc1
+        ora #$80
+        sta rc1
+        lda #$0B
+        sta rc8
+        lda #1
+        sta rc11
+        lda #0
+        sta rc0
+sr1:    rts
 ; SB387 - random lane for a spawn: A = road type.  Out: A = lane (0..3),
-; Z = usable, tent = the DB3A3 entry.
+; C = lane not usable, tent = the DB3A3 entry.
 sb387:  pha
         jsr Z_953B
         pla
@@ -1849,16 +1504,50 @@ sb387:  pha
         tax
         lda T_B3A3,x
         sta tent
-        and #1
-        php
+        lsr a
         lda ze
-        plp
+        rts
+; own code ($1C - D7603)
+owncode:
+        lda #$1C
+        sec
+        sbc $7603
+        rts
+; t = D7602 & 3 (3 -> 2)
+tval:   lda $7602
+        and #3
+        cmp #3
+        bne :+
+        lda #2
+:       rts
+; put4: head A at (mp),o3, $FF at o2, o1, 0
+put4:   ldy o3
+        sta (mp),y
+        lda #$FF
+        ldy o2
+        sta (mp),y
+        ldy o1
+        sta (mp),y
+        ldy #0
+        sta (mp),y
+        rts
+
+        ZPROC $B1BC
+        jsr rload
+        jsr b1bc
+        jmp rstore
+        ZPROC $B241
+        jsr rload
+        jsr b241
+        jsr rstore
+        lda ZV_9560
         rts
 
 ; ===========================================================================
 ; SB3B3 - erase car IY from the grid (zc = flags, zl2/zh2 = position)
         ZPROC $B3B3
-        ldx #$FF
+        jsr rload
+b3b3:   ldx #$FF
         lda zc
         and #$40
         beq :+
@@ -1869,138 +1558,102 @@ sb387:  pha
         jsr map_z2
         ldy #0
         lda (mp),y
-        sta za2
-        ldx ze2
+        sta za2                 ; A' = old head byte
         jsr p4base
         jsr clr4
         lda #0
         sta zb2
-        ldy #0
-        lda (ziyl),y
-        bne :+
-        rts
-:       ldy #1
-        lda (ziyl),y
-        and #$40
-        bne LB3E6
-        lda zl2
-        sta gl
-        ldx zh2
-        inx
-        lda (ziyl),y
-        and #$20
+        lda rc0
         beq :+
-        dex
-        dex
-:       stx gh
-        jmp LB3DD
-LB3E6:  ldy #8
-        lda (ziyl),y
-        beq LB3F7
-        ldy #1
-        lda (ziyl),y
-        and #$20
-        beq @i
-        sec
-        lda zl2
-        sbc #1
-        sta gl
-        lda zh2
-        sbc #0
-        sta gh
-        jmp LB3DD
-@i:     clc
-        lda zl2
-        adc #1
-        sta gl
-        lda zh2
-        adc #0
-        sta gh
-        jmp LB3DD
-LB3F7:  ldy #9
-        lda (ziyl),y
-        clc
-        adc #$64
-        sta gl
-        ldy #1
-        lda (ziyl),y
-        and #$20
-        bne :+
-        lda $75D6
-        clc
-        adc #1
-        jmp :++
-:       lda $75D7
-        sec
-        sbc #1
-:       sta gh
-        lda #$FF
-        sta ze2
-LB3DD:  jsr map_g
         ldx ze2
+        jsr ghost
+        stx ze2
+        jsr map_g
         jsr p4base
         jsr clr4
         lda #0
+:       rts
+
+; ghost: position of the car's second image (rec0 != 0) -> gl/gh,
+; X = its stride code (kept, or $FF beside the main road), Y = $FD/$FE.
+ghost:  ldy #$FD
+        lda rc1
+        and #$20
+        beq :+
+        iny
+:       bit rc1
+        bvs gh_t
+        lda zl2                 ; main road: lane H+1 / H-1
+        sta gl
+        lda zh2
+gh_pm:  jsr pm1
+        sta gh
+        rts
+gh_t:   lda rc8
+        beq gh_0
+        lda zl2                 ; side street: column +1 / -1
+        jsr pm1
+        sta gl
+        lda rc1
+        and #$20
+        bne :+
+        lda zh2
+        adc #0
+        sta gh
+        rts
+:       lda zh2
+        sbc #0
+        sta gh
+        rts
+gh_0:   lda rc9                 ; column 0: the outer main-road lane
+        clc
+        adc #$64
+        sta gl
+        ldx #$FF
+        lda $75D6
+        cpy #$FE
+        bcc gh_pm
+        lda $75D7
+        bcs gh_pm
+; A +1 (Y = $FD) or -1 (Y = $FE), carry out as adc/sbc
+pm1:    cpy #$FE
+        bcs :+
+        adc #1
+        rts
+:       sbc #1
         rts
 
 ; ===========================================================================
 ; SB412 - draw car IY (za2 = code, zl2/zh2 = position).  Z = drawn.
         ZPROC $B412
-        ldx #$FF
-        ldy #1
-        lda (ziyl),y
-        and #$40
-        beq :+
+        jsr rload
+b412:   ldx #$FF
+        bit rc1
+        bvc :+
         ldx #$F4
 :       stx zc2
         lda #$FF
         sta zb2
         jsr map_z2
-        ldx zc2
         jsr p4base
         jsr or4
-        beq :+
-        rts
-:       lda za2
-        ldy o3
-        sta (mp),y
-        lda #$FF
-        ldy o2
-        sta (mp),y
-        ldy o1
-        sta (mp),y
-        ldy #0
-        sta (mp),y
-        lda (ziyl),y
-        bne :+
-        rts
-:       lda zc2
+        bne dr_r
+        lda za2
+        jsr put4
+        lda rc0
+        beq dr_r
+        lda zc2
         sta ZV_B457
         lda zb2
         sta ZV_B457+1
-        ldy #1
-        lda (ziyl),y
-        and #$40
-        bne LB46F
-        lda zl2
-        sta gl
-        lda zh2
-        sta gh
-LB43F:  ldx #$FD
-        ldy #1
-        lda (ziyl),y
-        and #$20
-        beq :+
-        inx
-        dec gh
-        jmp LB44B
-:       inc gh
-LB44B:  stx zd2
-        jsr map_g
         ldx zc2
+        jsr ghost
+        stx zc2
+        sty zd2
+        jsr map_g
         jsr p4base
         jsr or4
-        beq LB463
+        beq :+
         jsr map_z2              ; blocked: undo the main cells (stride DB457)
         ldx ZV_B457
         jsr p4base
@@ -2011,61 +1664,12 @@ LB44B:  stx zd2
         sta zh2
         lda #1
         sta ze2
-        rts
-LB463:  lda zd2
-        ldy o3
-        sta (mp),y
-        lda #$FF
-        ldy o2
-        sta (mp),y
-        ldy o1
-        sta (mp),y
-        ldy #0
-        sta (mp),y
+dr_r:   rts
+:       lda zd2
+        jsr put4
         lda #0
         sta ze2
         rts
-LB46F:  ldy #8
-        lda (ziyl),y
-        beq LB483
-        ldx #$FD
-        ldy #1
-        lda (ziyl),y
-        and #$20
-        beq @i
-        inx
-        sec
-        lda zl2
-        sbc #1
-        sta gl
-        lda zh2
-        sbc #0
-        sta gh
-        jmp LB44B
-@i:     clc
-        lda zl2
-        adc #1
-        sta gl
-        lda zh2
-        adc #0
-        sta gh
-        jmp LB44B
-LB483:  ldy #9
-        lda (ziyl),y
-        clc
-        adc #$64
-        sta gl
-        ldy #1
-        lda (ziyl),y
-        and #$20
-        beq :+
-        lda $75D7
-        jmp :++
-:       lda $75D6
-:       sta gh
-        lda #$FF
-        sta zc2
-        jmp LB43F
 
 ; SB49A - A = (HL)|(HL+BC)|(HL+2BC)|(HL+3BC) (current set), Z = free
         ZPROC $B49A
@@ -2076,7 +1680,7 @@ LB483:  ldy #9
         lda #0
         sta t0
         ldx #4
-@l:     jsr map_g
+c_B49A_l:     jsr map_g
         ldy #0
         lda (mp),y
         ora t0
@@ -2089,7 +1693,7 @@ LB483:  ldy #9
         adc zb
         sta gh
         dex
-        bne @l
+        bne c_B49A_l
         lda t0
         rts
 
@@ -2097,201 +1701,40 @@ LB483:  ldy #9
 ; Scanners for the transverse cars (alt set: zl2/zh2 = HL, zb2 = B, zc2 = C,
 ; ze2/zd2 = DE, za2 = A').  Out: Z = clear, NZ = blocked.
 
-; SB4A5 - towards +H
-        ZPROC $B4A5
-sb4a5:  lda #5
+; DB5BB - side-street car moving away from the main road
+db5bb:  lda #5
         sta zb2
-        lda #0
-        sta zc2
-        jsr sb548
-        lda zb2
-        sta $7608
-        ldy #1
-        lda (ziyl),y
-        and #$20
-        bne LB4C8
-        ldy #0
-        lda (ziyl),y
-        beq LB4C8
-        inc zb2
-        jmp LB4C8
-LB4BF:  lda #0
-        sta zc2
-        jsr sb548
-LB4C5:  lda #0
-        sta gp
-        lda zh2
-        sta gp+1
-        ldy zl2
-        lda (gp),y
-        bne LB4CD
-LB4C8:  inc zh2
-        dec zb2
-        bne LB4C5
-        lda #0
-        rts
-LB4CD:  bpl @r
-        tax
-        and #$40
-        bne LB4D4
-        txa
-@r:     rts
-LB4D4:  lda zb2
-        clc
-        adc #1
-        cmp $7608
-        bcc LB4E0
-        jmp LB4C8
-LB4E0:  cpx #$FD
-        bcc :+
-        txa
-        rts
-:       lda #$B0
-        sta zl2
-        lda #$FE
-        sta zh2
-        lda #$81
-        sta zc2
-        txa
-LB4EA:  and #$1F
-        jsr mul12
-        sta ze2
-        stx zd2
-        clc
-        adc zl2
-        sta zl2
-        lda zd2
-        adc zh2
-        sta zh2
+        bne LB5C3
+LB5BF:  jsr rd2
+        bne LB5CD
+LB5C3:  jsr addhd2
+        inc zc2
         lda zc2
-        lsr a
-        bcc :+
-        lda #1
-        sta ze2
-        lda #0
-        sta zd2
-        beq @l
-:       lda #$FF
-        sta ze2
-        sta zd2
-@l:     jsr rd2
-        bne @r
-        clc
-        lda zl2
-        adc ze2
-        sta zl2
-        lda zh2
-        adc zd2
-        sta zh2
+        cmp #12
+        beq :+
         dec zb2
-        bne @l
+        bne LB5BF
         lda #0
-@r:     rts
-
-; SB502 - towards -H
-        ZPROC $B502
-sb502:  lda #5
-        sta zb2
-        lda #0
-        sta zc2
-        jsr sb55b
-        lda zb2
-        sta $7608
-        ldy #1
-        lda (ziyl),y
-        and #$20
-        beq LB525
-        ldy #0
-        lda (ziyl),y
-        beq LB525
-        inc zb2
-        jmp LB525
-LB51C:  lda #0
-        sta zc2
-        jsr sb55b
-LB522:  lda #0
-        sta gp
-        lda zh2
-        sta gp+1
-        ldy zl2
-        lda (gp),y
-        bne LB52A
-LB525:  dec zh2
-        dec zb2
-        bne LB522
-        lda #0
+:       rts
+LB5CD:  tay
+        ldx #$80
+        lda ze2
+        bmi :+
+        ldx #$81
+:       stx zc2
+        tya
         rts
-LB52A:  bpl @r
-        tax
-        and #$40
-        bne LB531
-        txa
-@r:     rts
-LB531:  lda zb2
-        cmp $7608
-        bcc LB53C
-        jmp LB525
-LB53C:  cpx #$FD
-        bcc :+
-        txa
-        rts
-:       lda #$6B
-        sta zl2
-        lda #$FD
-        sta zh2
-        lda #$80
-        sta zc2
-        txa
-        jmp LB4EA
-
-; SB548 / SB55B - stop the scan at a kerb without a side street
-sb548:  lda $75F1
-        lsr a
-        bcc @r
-        lda $75D7
-        sec
-        sbc zh2
-        sec
-        sbc #1
-        beq LB558
-        cmp zb2
-        bcs @r
-        sta zb2
-@r:     rts
-LB558:  lda #1
-        sta zb2
-        rts
-sb55b:  lda $75F1
-        and #4
-        beq @r
-        lda zh2
-        sec
-        sbc $75D6
-        sec
-        sbc #1
-        beq LB558
-        cmp zb2
-        bcs @r
-        sta zb2
-@r:     rts
 
 ; DB56D - side-street car moving towards the main road
 db56d:  ldx #5
         stx zb2
-        ldy #0
-        lda (ziyl),y
+        lda rc0
         beq LB57C
         inc zb2
-        jmp LB57C
+        bne LB57C
 LB579:  jsr rd2
         bne LB585
-LB57C:  clc
-        lda zl2
-        adc ze2
-        sta zl2
-        lda zh2
-        adc zd2
-        sta zh2
+LB57C:  jsr addhd2
         dec zc2
         bmi LB597
         dec zb2
@@ -2300,16 +1743,15 @@ LB57C:  clc
         rts
 LB585:  lda zb2
         cmp #5
-        bcc :+
-        jmp LB57C
-:       ldx #$80
+        bcs LB57C
+        ldx #$80
         lda ze2
         bpl :+
         ldx #$81
 :       stx zc2
         lda zb2
         rts
-LB597:  ldx $75D6
+LB597:  ldx $75D6               ; reached the main road
         lda ze2
         bpl :+
         ldx $75D7
@@ -2330,106 +1772,174 @@ LB597:  ldx $75D6
         adc #$64
         sta zl2
         lda ze2
-        bmi :+
-        jmp LB4BF
-:       jmp LB51C
-
-; DB5BB - side-street car moving away from the main road
-db5bb:  lda #5
+        bmi lb51c
+        bpl lb4bf
+; call the scan routine whose Spectrum address is A (lo) / X (hi)
+scan_disp:
+        cmp #<$B56D
+        beq db56d
+        cmp #<$B5BB
+        bne :+
+        jmp db5bb
+:
+        cmp #<$B502
+        beq sb502
+        bne sb4a5
+; SB4A5 (towards +H) / SB502 (towards -H), merged: sd = +1 / -1
+sb502:  ldx #$FF
+        .byte $2C               ; (bit abs: skips the ldx #1)
+sb4a5:  ldx #1
+        stx sd
+        lda #5
         sta zb2
-        jmp LB5C3
-LB5BF:  jsr rd2
-        bne LB5CD
-LB5C3:  clc
+        lda #0
+        sta zc2
+        jsr clamp
+        lda zb2
+        sta $7608
+        lda rc1                 ; part-way out of the lane on the scan side: B+1
+        ldx sd
+        bpl :+
+        eor #$20
+:       and #$20
+        bne LB4C8
+        lda rc0
+        beq LB4C8
+        inc zb2
+        bne LB4C8
+lb51c:  ldx #$FF                ; LB51C / LB4BF: scan B cells from H itself
+        .byte $2C
+lb4bf:  ldx #1
+        stx sd
+        lda #0
+        sta zc2
+        jsr clamp
+LB4C5:  lda zh2
+        sta gp+1
+        ldy zl2
+        lda (gp),y
+        bne LB4CD
+LB4C8:  lda zh2
+        clc
+        adc sd
+        sta zh2
+        dec zb2
+        bne LB4C5
+        lda #0
+        rts
+LB4CD:  bpl sc_r
+        tax
+        and #$40
+        bne LB4D4
+        txa
+sc_r:   rts
+LB4D4:  lda zb2                 ; side-street mouth: ignore it near the start
+        ldy sd
+        bmi :+
+        clc
+        adc #1
+:       cmp $7608
+        bcs LB4C8
+        cpx #$FD
+        txa
+        bcs sc_r
+:       pha
+        lda #$B0                ; scan B cells along that street's row
+        ldx #$FE
+        ldy #$81
+        bit sd
+        bpl :+
+        lda #$6B
+        ldx #$FD
+        ldy #$80
+:       sta zl2
+        stx zh2
+        sty zc2
+        pla
+        and #$1F
+        jsr mul12
+        sta ze2
+        stx zd2
+        jsr addhd2
+        lda zc2
+        lsr a
+        lda #1
+        ldx #0
+        bcs :+
+        lda #$FF
+        tax
+:       sta ze2
+        stx zd2
+:       jsr rd2
+        bne sc_r
+        jsr addhd2
+        dec zb2
+        bne :-
+        lda #0
+        rts
+; SB548 / SB55B - stop the scan at a kerb without a side street
+clamp:  bit sd
+        bmi :+
+        lda $75F1
+        lsr a
+        bcc cl_r
+        lda $75D7
+        sec
+        sbc zh2
+        jmp cl_2
+:       lda $75F1
+        and #4
+        beq cl_r
+        lda zh2
+        sec
+        sbc $75D6
+cl_2:   sec
+        sbc #1
+        beq :+
+        cmp zb2
+        bcs cl_r
+        .byte $2C
+:       lda #1
+        sta zb2
+cl_r:   rts
+; HL' += DE'
+addhd2: clc
         lda zl2
         adc ze2
         sta zl2
         lda zh2
         adc zd2
         sta zh2
-        inc zc2
-        lda zc2
-        cmp #12
-        beq @r
-        dec zb2
-        bne LB5BF
-        lda #0
-@r:     rts
-LB5CD:  tay
-        ldx #$80
-        lda ze2
-        bmi :+
-        ldx #$81
-:       stx zc2
-        tya
         rts
-
-; call the scan routine whose Spectrum address is A (lo) / X (hi)
-scan_disp:
-        cmp #<$B4A5
-        bne :+
-        jmp sb4a5
-:       cmp #<$B502
-        bne :+
-        jmp sb502
-:       cmp #<$B56D
-        bne :+
-        jmp db56d
-:       jmp db5bb
-
 ; ===========================================================================
 ; LB5D7 - transverse cars (dir 1/3); P: zb = dir, zc = flags
 LB5D7:  bit zc
         bvc LB608
-        lda zc
-        tax
-        lda zb
-        and #2
-        beq :+
-        txa
-        eor #$FF
-        tax
-:       txa
-        and #$20
-        beq LB5EE
-        lda #<$B5BB
-        sta zl
-        lda #>$B5BB
-        sta zh
-        ldy #8
-        lda (ziyl),y
+        lda rc8                 ; in a side street: scan along the table
         sta zc2
-        jmp LB5F9
-LB5EE:  lda #<$B56D
-        sta zl
+        ldx #<$B5BB
+        jsr cdir
+        bne :+
+        lda rc9
+        sta za2
+        ldx #<$B56D
+:       stx zl
         lda #>$B56D
         sta zh
-        ldy #8
-        lda (ziyl),y
-        sta zc2
-        ldy #9
-        lda (ziyl),y
-        sta za2
-LB5F9:  ldy #5
-        lda (ziyl),y
-        and #2
-        beq :+
+        lda #1
+        ldx #0
+        bit dirf
+        bpl :+
         lda #$FF
-        sta ze2
-        sta zd2
-        bne LB612
-:       lda #1
-        sta ze2
-        lda #0
-        sta zd2
-        beq LB612
-LB608:  lda zb
-        and #2
-        bne :+
-        lda #<$B4A5
+        tax
+:       sta ze2
+        stx zd2
+        jmp LB612
+LB608:  lda #<$B4A5             ; crossing the main road
         ldx #>$B4A5
-        bne :++
-:       lda #<$B502
+        bit dirf
+        bpl :+
+        lda #<$B502
         ldx #>$B502
 :       sta zl
         stx zh
@@ -2443,186 +1953,145 @@ LB612:  lda zl
         sta ZV_B63B
         lda zd2
         sta ZV_B63B+1
-        lda zl2                 ; push hl'
-        pha
+        lda zl2
+        sta svl
         lda zh2
-        pha
-        lda ZV_B61F
-        ldx ZV_B61F+1
+        sta svh
+        lda zl                  ; scan #1 (ahead)
         jsr scan_disp
         beq :+
         jsr sb96a
-:       pla                     ; pop hl ; push hl
-        sta zh2
-        pla
+:       lda #$DC                ; scan #2 from 3 cells / 3 rows back
+        bit rc1
+        bvs :+
+        lda #$FD
+:       clc
+        adc svl
         sta zl2
-        pha
-        lda zh2
-        pha
-        ldx #$DC
-        ldy #1
-        lda (ziyl),y
-        and #$40
-        bne :+
-        ldx #$FD
-:       stx ze2
-        lda #$FF
-        sta zd2
-        txa
-        clc
-        adc zl2
-        sta zl2
-        lda zh2
+        lda svh
         adc #$FF
         sta zh2
-        lda za2
-        sec
-        sbc #3
-        sta za2
-        ldy #8
-        lda (ziyl),y
+        dec za2
+        dec za2
+        dec za2
+        lda rc8
         sta zc2
         lda ZV_B63B
         sta ze2
         lda ZV_B63B+1
         sta zd2
-        lda ZV_B63E
-        ldx ZV_B63E+1
+        lda zl
         jsr scan_disp
         beq :+
         jsr sb96a
-:       pla
-        sta zh2
-        pla
+:       lda svl
         sta zl2
-        ; B644 (P)
-        bit zc
+        lda svh
+        sta zh2
+        bit zc                  ; B644
         bvc LB65C
-        ldy #8
-        lda (ziyl),y
+        lda rc8
         cmp #4
-        bcc :+
-        jmp LB7CF
-:       lda zc
-        tax
-        lda zb
-        and #2
-        beq :+
-        txa
-        eor #$FF
-        tax
-:       txa
-        and #$20
+        bcs j7cf
+        jsr cdir
         beq LB65C
-        jmp LB7CF
+j7cf:   jmp LB7CF
 LB65C:  lda $75F2
         lsr a
         bcc :+
         jmp LB785
-:       lda zb
-        and #2
-        bne :+
-        lda $75E7
-        and #8
-        jmp LB671
-:       lda $75E7
-        and #4
-LB671:  beq LB673
-        jmp LB6E9
-LB673:  ldy #10
-        lda (ziyl),y
-        bmi :+
-        jmp LB7CF
-:       lda $7600
+:
+        lda #8                  ; red light on this axis
+        bit dirf
+        bpl :+
+        lda #4
+:       and $75E7
+        beq LB673
+LB6E9:  jsr t81                 ; red light
+        bcc LB75A
+        bne LB673
+        jmp LB704
+LB673:  bit rc10
+        bpl j7cf
+        lda $7600
         cmp #4
         bcc :+
         lda #4
         sta $7600
-:       ldy #10
-        lda (ziyl),y
-        and #$40
-        bne LB6A3
-LB68C:  ldy #0
-        lda (ziyl),y
+:       bit rc10
+        bvs LB6A3
+LB68C:  lda rc0
         cmp #4
-        beq :+
-        jmp LB75A
-:       bit zc
-        bvs :+
-        jmp LAECC
-:       ldy #8
-        lda (ziyl),y
-        bne :+
-        jmp LAECC
-:       jmp LB75A
+        bne LB75A
+        bit zc
+        bvc jaecc
+        lda rc8
+        bne LB75A
+jaecc:  jmp LAECC
 LB6A3:  bit $7601
         bmi LB68C
-        ldy #10
-        lda (ziyl),y
+        lda rc10
         and #$10
         beq LB6BE
-        lda $75FD
-        lsr a
+        jsr token
         bcs LB6CE
-        lda $75FD
-        ora #1
-        sta $75FD
-        lda (ziyl),y
-        and #$EF
-        sta (ziyl),y
 LB6BE:  bit zc
-        bvc :+
-        jmp LB7CF
-:       ldy #7
-        lda (ziyl),y
-        tax
-        lda zb
-        and #2
-        bne LB6D5
-        cpx #$5E
-        beq @s
+        bvs j7cf
+        lda rc7
+        bit dirf
+        bmi :+
+        cmp #$5E
+        beq LB75A
+        bcc j7cf
         bcs LB6DE
-        jmp LB7CF
-@s:     jmp LB75A
+:       cmp #$61
+        beq LB75A
+        bcs j7cf
+LB6DE:  lda rc0
+        cmp #4
+        bne LB75A
+        beq jaecc
 LB6CE:  lda #0
         sta $7600
-        jmp LB7CF
-LB6D5:  cpx #$61
-        beq @s
-        bcc LB6DE
-        jmp LB7CF
-@s:     jmp LB75A
-LB6DE:  ldy #0
-        lda (ziyl),y
-        cmp #4
-        beq :+
-        jmp LB75A
-:       jmp LAECC
-LB6E9:  bit zc
-        bvs :+
-        jmp LB673
-:       ldy #8
-        lda (ziyl),y
-        bne :+
-        jmp LB673
-:       cmp #1
-        beq :+
-        jmp LB75A
-:       ldy #0
-        lda (ziyl),y
-        cmp #2
-        beq LB704
+        beq j7cf
+; brake
+LB75A:  ldx rc11
+        dex
+        beq LB773
+        bmi LB773
+        cpx #3
         bcc :+
-        jmp LB673
-:       jmp LB75A
+        dec rc11
+        dec rc11
+:       dec rc11
+        jmp LB7D2
+LB773:  lda $7600
+        beq LB780
+        lda #1
+        sta rc11
+        jmp LB7D2
+LB780:  lda #0
+        sta rc11
+LB780x: rts
+j673:   jmp LB673
+LB785:  bit $75FA               ; (ix+17) bit0 rule set (never seen in play)
+        bmi LB7AD
+        lda rc10
+        and #$10
+        beq j673
+        jsr t81
+        bcs j673
+        bcc LB75A
+LB7AD:  jsr t81
+        beq LB780
+        bcs j673
+        jmp LB75A
 ; wait for a gap in the cross traffic
 LB704:  lda #$2D
         sta ZV_B100
         ldx #$FF
-        lda $75D7
-        sec
-        sbc #1
-        tay
+        ldy $75D7
+        dey
         lda zc
         and #$20
         bne :+
@@ -2631,331 +2100,222 @@ LB704:  lda #$2D
         iny
 :       sty zh
         stx ze
-        ldy #9
-        lda (ziyl),y
+        lda rc9
         clc
         adc #$7C
         sta zl
         lda $75DF
         asl a
-        tax
-        ldy #10
-        lda (ziyl),y
+        bit rc10
         bpl LB737
-        and #$40
-        beq :+
-        txa
-        lsr a
+        bvs :+
+        lda #0
+:       lsr a
         clc
         adc #1
-        tax
-        jmp LB737
-:       ldx #1
-LB737:  txa
-        jsr Z_B9A0
-        beq :+
-        ldy #11
+LB737:  jsr sb9a0
+        bne LB780
         lda #0
-        sta (ziyl),y
-        rts
-:       ldy #11
-        lda #0
-        sta (ziyl),y
-        ldy #10
-        lda (ziyl),y
+        sta rc11
+        lda rc10
         and #$10
         beq LB753
-        lda $75FD
-        lsr a
-        bcc :+
-        rts                     ; (LB73A: speed 0, ret nz)
-:       lda $75FD
-        ora #1
-        sta $75FD
-        lda (ziyl),y
-        and #$EF
-        sta (ziyl),y
-LB753:  ldy #11
-        lda #1
-        sta (ziyl),y
-        ldy #5
-        lda (ziyl),y
-        sta zb
-; brake
-LB75A:  ldy #11
-        lda (ziyl),y
-        sec
-        sbc #1
-        beq LB773
-        bmi LB773
-        cmp #3
-        bcc LB76D
-        lda (ziyl),y
-        sec
-        sbc #2
-        sta (ziyl),y
-LB76D:  lda (ziyl),y
-        sec
-        sbc #1
-        sta (ziyl),y
-        jmp LB7D2
-LB773:  lda $7600
-        beq LB780
-        lda #1
-        sta (ziyl),y
-        jmp LB7D2
-LB780:  lda #0
-        sta (ziyl),y
+        jsr token
+        bcs LB780x
+LB753:  lda #1
+        sta rc11
+        jmp LB75A
+; t81: in a side street at column 1?  Returns to LB673 / LB75A itself, or
+; with flags of "rc0 cmp #2"
+t81:    bit zc
+        bvc :+
+        lda rc8
+        beq :+
+        cmp #1
+        bne :++
+        lda rc0
+        cmp #2
         rts
-; (ix+17) bit0 rule set (never seen in play)
-LB785:  bit $75FA
-        bmi LB7AD
-        ldy #10
-        lda (ziyl),y
-        and #$10
-        bne :+
+:       pla
+        pla
         jmp LB673
-:       bit zc
-        bvs :+
-        jmp LB673
-:       ldy #8
-        lda (ziyl),y
-        bne :+
-        jmp LB673
-:       cmp #1
-        beq :+
+:       pla
+        pla
         jmp LB75A
-:       ldy #0
-        lda (ziyl),y
-        cmp #2
-        bcc :+
-        jmp LB673
-:       jmp LB75A
-LB7AD:  bit zc
-        bvs :+
-        jmp LB673
-:       ldy #8
-        lda (ziyl),y
-        bne :+
-        jmp LB673
-:       cmp #1
-        beq :+
-        jmp LB75A
-:       ldy #0
-        lda (ziyl),y
-        cmp #2
-        beq LB7CA
-        bcc :+
-        jmp LB673
-:       jmp LB75A
-LB7CA:  ldy #11
-        lda #0
-        sta (ziyl),y
+; token: right-turn token (D75FD bit0).  C = already taken; else take it and
+; clear rec10 bit4.
+token:  lda $75FD
+        lsr a
+        bcs :+
+        inc $75FD
+        lda rc10
+        and #$EF
+        sta rc10
+:       rts
+; cdir: A = (flags ^ (rec5 bit1 ? $FF : 0)) & $20  (Z = moving forward)
+cdir:   lda zc
+        bit dirf
+        bpl :+
+        eor #$FF
+:       and #$20
         rts
 ; move by `speed' sub-steps
-LB7CF:  jsr Z_B9B1
-LB7D2:  ldy #11
-        lda (ziyl),y
-        bne :+
-        rts
-:       lda zc
+LB7CF:  jsr sb9b1
+LB7D2:  lda rc11
+        beq mv_r
+        jsr cdir
         tax
-        lda zb
-        and #2
-        beq :+
-        txa
-        eor #$FF
-        tax
-:       txa
-        and #$20
-        tax
-        ldy #0
-        lda (ziyl),y
+        lda rc0
         sta ZV_B8F9
         cpx #0
         bne LB81B
         clc
-        ldy #11
-        adc (ziyl),y
+        adc rc11
         cmp #8
         bcc LB7F0
         clc
-        jmp LB820
-LB7F0:  sta nsub
-        cmp #0
+        bcc LB820
+LB7F0:  tax
         beq LB7FF
-        ldy #0
-        lda (ziyl),y
+        lda rc0
         beq LB7FF
+        stx rc0
+mv_r:   rts
+LB7FF:  stx nsub
+        jsr b3b3
         lda nsub
-        sta (ziyl),y
-        rts
-LB7FF:  jsr Z_B3B3
-        lda nsub
-        ldy #0
-        sta (ziyl),y
-        jsr Z_B412
-        bne :+
-        rts
-:       lda ZV_B8F9
-        ldy #0
-        sta (ziyl),y
-        ldy #6
-        lda (ziyl),y
+        sta rc0
+        jsr b412
+        beq mv_r
+        lda ZV_B8F9
+        sta rc0
+        lda rc6
         sta zl2
-        iny
-        lda (ziyl),y
+        lda rc7
         sta zh2
-        jmp Z_B412
+        jmp b412
 LB81B:  sec
-        ldy #11
-        sbc (ziyl),y
+        sbc rc11
         bcs LB7F0
         sec
 LB820:  php
         pha
-        jsr Z_B3B3
-        jsr Z_B905
+        jsr b3b3
+        jsr b905
         pla
         plp
-        jsr Z_B83A
-        jmp Z_B82C
-
+        jsr b83a
+        jmp LB82C
 ; ===========================================================================
 ; SB83A - step to the next cell (A = sub-position, C = direction of the
 ; overflow, zc = flags, zl2/zh2 = position)
         ZPROC $B83A
-        bit zc
-        bvs :+
-        jmp LB894
-:       bcc LB863
+        pha
+        jsr rload
+        pla
+        jsr b83a
+        jmp rstore
+b83a:   bit zc
+        bvc LB894
+        bcc LB863
         and #7
-        ldy #0
-        sta (ziyl),y
-        ldy #8
-        lda (ziyl),y
-        clc
-        adc #1
-        sta (ziyl),y
+        sta rc0
+        inc rc8
+        lda rc8
         cmp #12
         bne LB853
         pla
         pla
-        jmp Z_DBFA
+        jmp todbfa
 LB853:  lda zc
         and #$20
-LB855:  beq @d
+LB855:  beq :+
         inc zl2
         bne LB85B
         inc zh2
-        jmp LB85B
-@d:     lda zl2
+        bne LB85B
+:       lda zl2
         bne :+
         dec zh2
 :       dec zl2
-LB85B:  ldy #6
-        lda zl2
-        sta (ziyl),y
-        iny
+LB85B:  lda zl2                 ; (also: rec6/7 = HL')
+        sta rc6
         lda zh2
-        sta (ziyl),y
-        rts
+        sta rc7
+b83_r:  rts
 LB863:  and #7
-        ldy #0
-        sta (ziyl),y
-        ldy #8
-        lda (ziyl),y
+        sta rc0
+        lda rc8
         beq LB877
-        sec
-        sbc #1
-        sta (ziyl),y
+        dec rc8
         lda zc
         eor #$FF
         and #$20
-        jmp LB855
-LB877:  ldy #1
-        lda (ziyl),y
+        bpl LB855
+LB877:  lda rc1
         and #$BF
-        sta (ziyl),y
+        sta rc1
         lda zc
         and #$BF
         sta zc
         and #$20
         bne :+
-        lda $75D6
-        clc
-        adc #2
-        jmp :++
-:       lda $75D7
-:       sec
-        sbc #1
-        sta zh2
-        ldy #9
-        lda (ziyl),y
+        ldx $75D6
+        inx
+        bne :++
+:       ldx $75D7
+        dex
+:       stx zh2
+        lda rc9
         clc
         adc #$64
         sta zl2
-        jmp LB85B
+        bne LB85B
 LB894:  bcc LB8BE
         and #7
-        ldy #0
-        sta (ziyl),y
+        sta rc0
         lda zc
         and #$20
         beq LB8A2
 LB8A0:  inc zh2
         inc zh2
 LB8A2:  dec zh2
-LB8A3:  ldy #7
-        lda zh2
-        sta (ziyl),y
+LB8A3:  lda zh2
+        sta rc7
         sta gp+1
-        lda #0
-        sta gp
         ldy zl2
         lda (gp),y
         cmp #$FD
-        bcc :+
-        rts
-:       tax
+        bcs b83_r
+        tax
         and #$C0
         cmp #$C0
-        beq :+
-        rts
-:       ldy #1
-        lda (ziyl),y
+        bne b83_r
+        lda rc1
         ora #$40
-        sta (ziyl),y
+        sta rc1
         lda zc
         ora #$40
         sta zc
         txa
-        jsr Z_B9EE
+        jsr b9ee
         lda zl
         sta zl2
         lda zh
         sta zh2
         rts
 LB8BE:  and #7
-        ldy #0
-        sta (ziyl),y
+        sta rc0
         lda zc
         and #$20
         beq LB8E1
         lda zh2
         cmp #$60
         bne LB8A2
-        ldy #1
-        lda (ziyl),y
+        lda rc1
         and #$DF
-        sta (ziyl),y
-        ldy #0
-        lda (ziyl),y
-        eor #$FF
-        clc
-        adc #1
-        and #7
-        sta (ziyl),y
+        sta rc1
+        jsr negr0
         beq :+
         dec zh2
 :       dec zh2
@@ -2963,36 +2323,49 @@ LB8BE:  and #7
 LB8E1:  lda zh2
         cmp #$5F
         bne LB8A0
-        ldy #1
-        lda (ziyl),y
+        lda rc1
         ora #$20
-        sta (ziyl),y
-        ldy #0
-        lda (ziyl),y
-        eor #$FF
-        clc
-        adc #1
-        and #7
-        sta (ziyl),y
+        sta rc1
+        jsr negr0
         beq :+
         inc zh2
 :       inc zh2
         jmp LB8A3
+; rc0 = (-rc0) & 7
+negr0:  lda #0
+        sec
+        sbc rc0
+        and #7
+        sta rc0
+        rts
 
 ; ===========================================================================
 ; SB905 / SB913 - back up / restore the record
         ZPROC $B905
-        ldy #11
-:       lda (ziyl),y
-        sta ZV_B8F9,y
-        dey
+        jsr rload
+b905:   ldx #11
+:       lda rc0,x
+        sta ZV_B8F9,x
+        dex
         bpl :-
+        ldy #3                  ; (rc3/rc4 are not loaded: never used)
+        lda (ziyl),y            ;mem
+        sta ZV_B8F9+3
+        iny
+        lda (ziyl),y            ;mem
+        sta ZV_B8F9+4
         rts
         ZPROC $B913
         ldy #11
 :       lda ZV_B8F9,y
-        sta (ziyl),y
+        sta (ziyl),y            ;mem
         dey
+        bpl :-
+        rts
+b913:   ldx #11
+:       lda ZV_B8F9,x
+        sta rc0,x
+        dex
         bpl :-
         rts
 
@@ -3021,13 +2394,12 @@ LB933:  inc zl2
         beq LB933
         ora #0
         bpl LB966
-LB93C:  tax
-        and #1
-        beq :+
+LB93C:  lsr a
+        bcc :+
         dec zh2
-        jmp :++
+        dec zh2
 :       inc zh2
-:       jsr rd2
+        jsr rd2
         bpl LB966
         jsr sb98d
         sta zl2
@@ -3036,11 +2408,8 @@ LB93C:  tax
         jmp LB966
 LB94E:  txa
         and #7
-        jmp LB966
-LB952:  lda #12
-        sta ze2
-        lda #0
-        sta zd2
+        bpl LB966
+LB952:
 :       clc
         lda zl2
         adc #12
@@ -3054,13 +2423,13 @@ LB952:  lda #12
         bpl LB966
 LB95E:  lda zc2
         lsr a
-        bcs @i
+        bcs c_LB95E_i
         lda zl2
         bne :+
         dec zh2
 :       dec zl2
         jmp :+
-@i:     inc zl2
+c_LB95E_i:     inc zl2
         bne :+
         inc zh2
 :       jsr rd2
@@ -3088,18 +2457,16 @@ sb96a:  jsr sb91b
         ldy #0
         lda (tp),y
         and #1
-        bne :+
-        rts
+        beq rt_2488
 :       jmp sb12f
 LB97E:  lda #0
         sta $7600
-        ldy #11
-        lda (ziyl),y
+        lda rc11
         cmp #3
         bcs :+
-        rts
+rt_2488:rts
 :       lda #2
-        sta (ziyl),y
+        sta rc11
         rts
 
 ; SB98D - A -> table record address.  Internal: A = lo, X = hi.
@@ -3108,76 +2475,62 @@ LB97E:  lda #0
         sta zl
         stx zh
         rts
-sb98d:  sta t6
+sb98d:  tay
         and #$1F
-        jsr mul12
-        tay
-        lda t6
+        pha
+        tya
         and #$20
-        bne @r
-        tya
-        clc
-        adc #<$FD6B
         tay
-        txa
-        adc #>$FD6B
+        pla
+; tadd: A -> A/X = (Y ? $FEB0 : $FD6B) + "12*A" (SB9D2)
+tadd:   jsr mul12
+        stx t6
+        ldx #0
+        cpy #0
+        beq :+
+        inx
+:       clc
+        adc T_TB,x
+        pha
+        lda t6
+        adc T_TB+2,x
         tax
-        tya
-        rts
-@r:     tya
-        clc
-        adc #<$FEB0
-        tay
-        txa
-        adc #>$FEB0
-        tax
-        tya
+        pla
         rts
 
 ; SB9A0 - test A rows of the cross traffic (P: zl/zh = cell, ze = step)
-        ZPROC $B9A0
-        sta cnt
-@l:     lda zh
+sb9a0:  sta cnt
+c_sb9a0_l:     lda zh
         sta gp+1
         ldy zl
         ldx #$34
         jsr lb0ff
-        bne @r
+        bne c_sb9a0_r
         lda zh
         clc
         adc ze
         sta zh
         dec cnt
-        bne @l
-@r:     rts
+        bne c_sb9a0_l
+c_sb9a0_r:     rts
 
 ; SB9B1 - ease the speed towards D7600
-        ZPROC $B9B1
-        lda $7600
-        ldy #11
+sb9b1:  lda $7600
         sec
-        sbc (ziyl),y
-        bne :+
-        rts
-:       bcc LB9C8
+        sbc rc11
+        beq :+
+        bcc LB9C8
         cmp #4
-        lda #2
-        bcs :+
         lda #1
-:       clc
-        adc (ziyl),y
-        sta (ziyl),y
-        rts
-LB9C8:  cmp #$FE
-        php
-        lda (ziyl),y
-        sec
-        sbc #1
-        plp
-        bcs :+
-        sec
-        sbc #1
-:       sta (ziyl),y
+        adc #0
+        clc
+        adc rc11
+        sta rc11
+:       rts
+LB9C8:  dec rc11
+        cmp #$FE
+        bcs :-
+        dec rc11
         rts
 
 ; SB9D2 - "multiply by 12" (exact): A -> ze/zd
@@ -3189,325 +2542,243 @@ LB9C8:  cmp #$FE
 
 ; SB9DD - A -> zl/zh = (rec1 bit5 ? $FEB0 : $FD6B) + 12*A
         ZPROC $B9DD
-        jsr mul12
+        pha
+        jsr rload
+        pla
+        pha
+        jsr mul12               ; (DE = 12*A as the original)
         sta ze
         stx zd
-        ldy #1
-        lda (ziyl),y
+        pla
+b9dd:   pha
+        lda rc1
         and #$20
-        bne @r
-        lda ze
-        clc
-        adc #<$FD6B
+        tay
+        pla
+        jsr tadd
         sta zl
-        lda zd
-        adc #>$FD6B
-        sta zh
-        rts
-@r:     lda ze
-        clc
-        adc #<$FEB0
-        sta zl
-        lda zd
-        adc #>$FEB0
-        sta zh
+        stx zh
         rts
 
 ; SB9EE - convert the position to junction-table mode (row = rec+6 - $64)
         ZPROC $B9EE
-        ldy #6
-        lda (ziyl),y
+        jsr rload
+        jsr b9ee
+        jmp rstore
+b9ee:
+        lda rc6
         sec
         sbc #$64
-        ldy #9
-        sta (ziyl),y
+        sta rc9
         tax
-        ldy #8
         lda #0
-        sta (ziyl),y
+        sta rc8
         txa
-        jsr Z_B9DD
-        ldy #6
+        jsr b9dd
         lda zl
-        sta (ziyl),y
-        iny
+        sta rc6
         lda zh
-        sta (ziyl),y
-        rts
+        sta rc7
+rt_2603:rts
 
 ; SBA04 - a stopped criminal car "SUBMITS" (never seen in play)
-        ZPROC $BA04
-        ldy #11
-        lda (ziyl),y
-        beq :+
-        rts
-:       ldy #1
-        lda (ziyl),y
+sba04:
+        lda rc11
+        bne rt_2603
+:
+        lda rc1
         ora #1
-        sta (ziyl),y
-        ldy #2
-        lda (ziyl),y
+        sta rc1
+        lda rc2
         and #2
-        bne :+
-        rts
-:       lda #$8A
-        sta zb
-        lda (ziyl),y
+        beq rt_2603
+:       lda #$8A                ; token: HIT-CAR / ARM'D CAR / DRUG CAR
+        sta ZV_BA4A
+        lda rc2
         and #4
         beq LBA37
         jsr Z_DBD7
-        lda #$89
-        sta zb
+        dec ZV_BA4A
         ldy #0
         lda (zixl),y
         ora #$40
         sta (zixl),y
-        ldy #2
-        lda (ziyl),y
+        lda rc2
         and #8
         bne LBA34
-        dec zb
+        dec ZV_BA4A
         ldy #6
         lda (zixl),y
         and #8
         bne LBA37
         jsr Z_DDD3
         lda #$32
-        jmp LBA39
+        bne LBA39
 LBA34:  jsr Z_DDD3
 LBA37:  lda #$C8
 LBA39:  ldx #<$75E1
         stx zixl
         ldx #>$75E1
         stx zixh
-        tax
-        lda zb
-        pha
-        txa
         jsr Z_F36A
-        pla
-        sta ZV_BA4A
         jsr Z_BA5F
         .byte $30,$08
         ZLABEL $BA4A, 1
         .byte $00,"SUBMITS"
-        ldy #1
-        lda (ziyl),y
+        lda rc1
         sta zc
         rts
 
 ; ===========================================================================
 ; LE833 - turn a car at a junction (P: zb = rec+5, zc = flags, zl2/zh2 = pos)
-        ZPROC $E833
-LE833:  jsr Z_B3B3
-        jsr Z_B905
+LE833:  jsr b3b3
+        jsr b905
         lda zb
         sta zd
         lsr a
         lsr a
         and #3
-        tax
-        ldy #10
-        lda (ziyl),y
-        and #$40
-        beq LE85F
-        inx
+        tax                     ; X = turn phase
+        bit rc10
+        bvc LE85F
+        inx                     ; right turn: 0 -> 1 -> 2 -> done
         cpx #3
         bne LE876
         jsr e8clr
         lda $75FD
         and #$FE
         sta $75FD
-        ldx #0
         inc zd
-        jmp LE876
-LE85F:  dex
+        ldx #0
+        beq LE876
+LE85F:  dex                     ; left turn: 0 -> 2 (dir-1) -> 1 -> done
         bne :+
         jsr e8clr
-        jmp LE876
+        ldx #0
+        beq LE876
 :       bpl LE876
         ldx #2
         dec zd
 LE876:  txa
         asl a
         asl a
-        and #$0C
         sta ze
         lda zd
         and #3
         ora ze
-        ldy #5
-        sta (ziyl),y
+        sta rc5
         lda zb
         asl a
         tax
-        ldy #10
-        lda (ziyl),y
-        and #$40
-        beq :+
+        bit rc10
+        bvc :+
         inx
 :       lda T_E94D,x
         sta ent
-        and #1
-        beq LE8A5
-        lda ent
-        and #2
-        beq @d
-        inc zl2
-        bne @s
-        inc zh2
-        jmp @s
-@d:     lda zl2
-        bne :+
-        dec zh2
-:       dec zl2
-@s:     ldy #6
-        lda zl2
-        sta (ziyl),y
-        iny
-        lda zh2
-        sta (ziyl),y
+        lsr a
+        bcc LE8A5
+        and #1                  ; (bit1) position +1 / -1
+        jsr LB855
 LE8A5:  lda ent
         and #4
-        bne :+
-        jmp Z_B82C
-:       lda ent
+        beq j82c
+        lda ent
         eor zc
         and #$20
-        tax
-        ldy #0
-        lda (ziyl),y
-        cpx #0
         bne LE8F6
+        lda rc0
         sec
         sbc #2
-        bcc :+
-        jmp LE945
-:       lda zc
+        bcs LE945
+        lda #6
+        sta zc2
+        lda zc
         and #$20
         bne LE8E7
         dec zh2
-        lda #6
-        sta zc2
         lda $75D6
         cmp zh2
         bne LE8DB
-        lda zl2
         ldx #<$FD6B
         ldy #>$FD6B
-LE8CA:  stx zl2
-        sty zh2
-        sec
-        sbc #$64
-        ldy #9
-        sta (ziyl),y
-        pha
-        ldy #8
-        lda #0
-        sta (ziyl),y
-        ldy #1
-        lda (ziyl),y
-        ora #$40
-        sta (ziyl),y
-        pla
-        jsr mul12
-        sta ze2
-        stx zd2
-        clc
-        adc zl2
-        sta zl2
-        lda zd2
-        adc zh2
-        sta zh2
-LE8DB:  ldy #6
-        lda zl2
-        sta (ziyl),y
-        iny
-        lda zh2
-        sta (ziyl),y
-        ldy #0
-        lda zc2
-        sta (ziyl),y
-        jmp Z_B82C
-LE8E7:  lda #6
-        sta zc2
-        inc zh2
+        bne LE8CA
+LE8E7:  inc zh2
         lda $75D7
         cmp zh2
         bne LE8DB
-        lda zl2
         ldx #<$FEB0
         ldy #>$FEB0
-        jmp LE8CA
-LE8F6:  clc
+LE8CA:  lda rc1                 ; enter the side-street table
+        ora #$40
+        sta rc1
+        lda #0
+        sta rc8
+        lda zl2
+        stx zl2
+        sty zh2
+        sec
+        sbc #$64
+        sta rc9
+        jsr mul12
+        sta ze2
+        stx zd2
+        jsr addhd2
+LE8DB:  jsr LB85B
+        lda zc2                 ; (6)
+LE945:  and #7
+        sta rc0
+j82c:   jmp LB82C
+LE8F6:  lda rc0
+        clc
         adc #2
         cmp #8
-        bcs :+
-        jmp LE945
-:       lda zc
+        bcc LE945
+        lda zc
         and #$20
         bne LE92E
         bit zc
         bvc LE921
-        lda $75D6
-        clc
-        adc #1
-LE908:  sta zh2
-        ldy #9
-        lda (ziyl),y
+        ldx $75D6
+        inx
+LE908:  stx zh2
+        lda rc9
         clc
         adc #$64
         sta zl2
-        ldy #1
-        lda (ziyl),y
+        lda rc1
         and #$BF
-        sta (ziyl),y
-LE914:  ldy #6
-        lda zl2
-        sta (ziyl),y
-        iny
-        lda zh2
-        sta (ziyl),y
-        ldy #0
+        sta rc1
+LE914:  jsr LB85B
         lda #0
-        sta (ziyl),y
-        jmp Z_B82C
+        beq LE945
 LE921:  inc zh2
         lda zh2
         cmp #$60
         bne LE914
-        ldy #1
-        lda (ziyl),y
+        lda rc1
         ora #$20
-        sta (ziyl),y
-        jmp LE914
+        sta rc1
+        bne LE914
 LE92E:  bit zc
         bvc LE938
-        lda $75D7
-        sec
-        sbc #1
-        jmp LE908
+        ldx $75D7
+        dex
+        bne LE908
 LE938:  dec zh2
         lda zh2
         cmp #$5F
         bne LE914
-        ldy #1
-        lda (ziyl),y
+        lda rc1
         and #$DF
-        sta (ziyl),y
+        sta rc1
         jmp LE914
-LE945:  and #7
-        ldy #0
-        sta (ziyl),y
-        jmp Z_B82C
 
 ; rec+10 &= ~$81 ; rec+1 &= ~4
-e8clr:  ldy #10
-        lda (ziyl),y
+e8clr:
+        lda rc10
         and #$7E
-        sta (ziyl),y
-        ldy #1
-        lda (ziyl),y
+        sta rc10
+        lda rc1
         and #$FB
-        sta (ziyl),y
+        sta rc1
         rts

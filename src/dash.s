@@ -14,6 +14,8 @@
         .include "gfx_streams.inc"
 
         .import gfx_cls, gfx_lz, gfx_textinit, TEXTROW1, gfx_arng, gfx_km
+        .include "disk.inc"
+        .import T_DASH_END
         .import T_DASH, T_LAMPL, T_LAMPR, T_A3D6, T_A47B
         .importzp lzs, lzd, lzc
 ixp = lzc                       ; SA399/SA457 patch pointer (the Z80 IX)
@@ -55,6 +57,19 @@ tmpa:   .byte 0
 ; ===========================================================================
 ; S9E1E: draw the dashboard (game start)
         ZPROC $9E1E
+        ; the packed picture lives on the disk (src/disk.inc): load it into
+        ; the 3D buffer area, which is free at game start
+        lda #DASH_TRACK
+        sta D_TRK
+        lda #1
+        sta D_SEC
+        lda #>(T_DASH_END - T_DASH + 255)
+        sta D_CNT
+        lda #<T_DASH
+        sta D_DEST
+        lda #>T_DASH
+        sta D_DEST+1
+        jsr DREAD
         lda #$28
         jsr gfx_cls             ; 8F 28 (and border variable)
         jsr gfx_textinit

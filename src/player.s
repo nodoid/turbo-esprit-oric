@@ -65,7 +65,7 @@ p_t2:   .res 1
 p_t3:   .res 1
 p_side: .res 1
 
-        .data
+        .segment "DATA3"
         ZLABEL $E965, 2         ; current gear entry (pointer into T_EAB5)
         .word T_EAB5+8
         ZLABEL $E967, 2         ; speed (signed), revs
@@ -80,7 +80,7 @@ ZV_E968 = ZV_E967 + 1           ; revs (read by world and dash)
         ZVAR $F470, 1           ; cells to move this pass
         ZVAR $F691, 1           ; player lateral coordinate when firing
 
-        .rodata
+        .segment "RODATA3"
 ; DE94D: table used by the traffic code (E88E)
 T_E94D: .byte $01,$01,$24,$24,$03,$03,$04,$04,$01,$25,$24,$27,$03,$07,$04,$05
         .byte $25,$24,$27,$03,$07,$04,$05,$01
@@ -135,7 +135,7 @@ T_F471: .byte $00,$00,$00,$10,$10,$10,$11,$11,$12,$12,$12,$22,$22,$22,$23,$23
         sta zl
 .endmacro
 
-        .code
+        .segment "CODE3"
 
 ; ---------------------------------------------------------------- helpers
 ; exx: swap BC DE HL with the alternate set.  Preserves A (flags = A).

@@ -22,7 +22,7 @@
         .include "snd.inc"
         .include "hw.inc"
 
-        .import key_row
+        .import key_row, play_game
         .importzp frames
 
         ZIMPORT $A4C9           ; text/graphics stream engine (inline stream)
@@ -75,8 +75,7 @@ tables: .res 160
 SCORE1  = tables+10
 PEN1    = tables+90
 
-        .code
-
+        .segment "MCODE"
 ; ===========================================================================
 ; FD11 - program entry (RANDOMIZE USR 64785): city select
 ZPROC $FD11
@@ -161,7 +160,7 @@ ZPROC $FD91
         bne @m
         rts
 
-        .rodata
+        .segment "MRODATA"
 tab_init: .byte "DURELL ",'1',1,0
 last_txt: .byte " LAST  "
 city_lo: .lobytes $686B, $69BE, $6B11, $6C64
@@ -169,8 +168,7 @@ city_hi: .hibytes $686B, $69BE, $6B11, $6C64
 city_name: .byte cn1-city_txt, cn2-city_txt, cn3-city_txt, cn4-city_txt
 city_lead: .byte 1, 0, 3, 3
 map_txt: .byte "MAP"
-        .code
-
+        .segment "MCODE"
 ; ===========================================================================
 ; F9FD - start a random menu tune (R & 4 picks tune A or B)
 ZPROC $F9FD
@@ -210,11 +208,10 @@ ZPROC $FA90
         pha
         rts
 
-        .rodata
+        .segment "MRODATA"
 opt_lo: .lobytes Z_FB23-1, Z_FBD6-1, Z_F85D-1, Z_F84E-1, Z_FB99-1, Z_FB51-1, Z_FB19-1, Z_FABC-1
 opt_hi: .hibytes Z_FB23-1, Z_FBD6-1, Z_F85D-1, Z_F84E-1, Z_FB99-1, Z_FB51-1, Z_FB19-1, Z_FABC-1
-        .code
-
+        .segment "MCODE"
 ; ---------------------------------------------------------------------------
 ; 7 PRACTICE: no enemy cars, 1 life, skill 1, not recorded
 ZPROC $FB19
@@ -224,7 +221,7 @@ ZPROC $FB19
         sta zc
         jsr music_stop
         lda #'1'
-        jmp Z_7347
+        jmp play_game
 ; 8 PLAY, then record the result (FACA)
 ZPROC $FABC
         lda #$FF
@@ -233,7 +230,7 @@ ZPROC $FABC
         sta zc
         jsr music_stop
         lda #'4'
-        jsr Z_7347
+        jsr play_game
 
 ; FACA: LAST entries get the skill and 0; SCORE-PENALTY >= 0 goes into the
 ; SCORE table, else -(SCORE-PENALTY) into the PENALTY table.
@@ -360,12 +357,11 @@ ZPROC $F85D
         pla
         jmp Z_FA1E
 
-        .rodata
+        .segment "MRODATA"
 tab_e7:  .byte 70, 150                         ; F79D / F7ED: entry 7
 tab_tok: .byte $8B, $8C                         ; " SCORE" / "PENALTY"
 tab_body: .byte $20, $0F, $20                   ; body attr (header: next)
-        .code
-
+        .segment "MCODE"
 ; F867 - toff = offset of entry 7 in `tables`, mtmp = title token, body = body attribute,
 ; Y = header attribute.
 ZPROC $F867
@@ -881,7 +877,7 @@ fl_b2:  .byte $18,$8D,$83,$00   ; ROM font, overwrite mode
         ldy cur_y
         jmp cursor_xy
 
-        .rodata
+        .segment "MRODATA"
 ; Oric matrix -> key name: a character (shown with a space after it), $80+i
 ; = 2-letter name i of names2, 0 = no key.  Also the text input table: the
 ; characters, and SP EN DL -> ' ', ENTER, DELETE.

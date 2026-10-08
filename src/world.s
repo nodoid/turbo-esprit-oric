@@ -124,7 +124,7 @@ xh      = u1
 xt      = u2
 xdist   = u3
 
-        .segment "RODATA"
+        .segment "RODATA4"
         .include "world_tables.inc"
 
         .code

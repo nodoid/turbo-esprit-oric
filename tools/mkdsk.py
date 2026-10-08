@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the bootable Oric disk (Microdisc, Sedoric 3) for the 64K version.
 
-usage: mkdsk.py out.dsk SCREEN.bin MAIN.bin OVERLAY.bin
+usage: mkdsk.py out.dsk SCREEN.bin MAIN.bin BOOT.bin OVERLAY.bin MENU.bin DASH.bin
 
 Needs tap2dsk (Fabrice Frances' Euphoric tool, which carries Sedoric 3):
 set TAP2DSK to its binary (default: tap2dsk on the PATH).
@@ -12,10 +12,12 @@ How the disk boots:
     loading the loading screen ($A000), the main part of the game ($0600..)
     and a small machine-code stub ($0500).
   * The overlay part of the game (16K, for the RAM under the ROM) is not a
-    Sedoric file: it is stored as raw sectors on the tracks after the Sedoric
-    ones.  The stub switches the ROM - and with it Sedoric, which lives in
-    that RAM - off, reads those sectors straight into $C000.. with the disk
-    controller (WD1793) and jumps to $0600.
+    Sedoric file: it is stored as raw sectors on fixed tracks (src/disk.inc).
+    The stub (src/boot/boot.s) switches the ROM - and with it Sedoric, which
+    lives in that RAM - off, reads those sectors straight into $C000.. with
+    the disk controller (WD1793) and jumps to $0600.  Its sector reader stays
+    resident; the game uses it for the menu and dashboard blobs, which are
+    raw sectors too.
 """
 import os
 import struct
@@ -32,59 +34,6 @@ def tape_file(name, addr, data, typ=0x80):
     return (bytes([0x16] * 3 + [0x24, 0x00, 0x00, typ, 0x00,
                                 end >> 8, end & 0xFF, addr >> 8, addr & 0xFF, 0x00])
             + name.encode('ascii') + b'\x00' + data)
-
-
-def boot_stub(track0, nsect):
-    """6502 code at $0500: read nsect sectors from track0/sector 1 on into
-    $C000.., then JMP $0600."""
-    ZP_PTR, ZP_TRK, ZP_SEC, ZP_CNT = 0xF0, 0xF2, 0xF3, 0xF4
-    c = bytearray()
-
-    def here():
-        return 0x0500 + len(c)
-    c += bytes([0x78])                                      # sei
-    c += bytes([0xA9, 0x84, 0x8D, 0x14, 0x03])              # lda #$84 : sta $0314 (ROM, EPROM off)
-    c += bytes([0xA9, 0x00, 0x85, ZP_PTR, 0xA9, 0xC0, 0x85, ZP_PTR + 1])
-    c += bytes([0xA9, track0, 0x85, ZP_TRK])
-    c += bytes([0xA9, 0x01, 0x85, ZP_SEC])
-    c += bytes([0xA9, nsect, 0x85, ZP_CNT])
-    seek = here()
-    c += bytes([0xA5, ZP_TRK, 0x8D, 0x13, 0x03])            # lda trk : sta data
-    c += bytes([0xA9, 0x18, 0x8D, 0x10, 0x03])              # seek, head load, no verify
-    wait_calls = [len(c)]
-    c += bytes([0x20, 0x00, 0x00])                          # jsr wait (patched)
-    rd = here()
-    c += bytes([0xA5, ZP_SEC, 0x8D, 0x12, 0x03])            # lda sec : sta sector
-    c += bytes([0xA9, 0x80, 0x8D, 0x10, 0x03])              # read sector
-    c += bytes([0xA0, 0x00])                                # ldy #0
-    drq = here()
-    c += bytes([0xAD, 0x18, 0x03])                          # lda $0318
-    c += bytes([0x30, (drq - (here() + 2)) & 0xFF])         # bmi drq (DRQ active low)
-    c += bytes([0xAD, 0x13, 0x03, 0x91, ZP_PTR, 0xC8])      # lda data : sta (ptr),y : iny
-    c += bytes([0xD0, (drq - (here() + 2)) & 0xFF])         # bne drq
-    wait_calls.append(len(c))
-    c += bytes([0x20, 0x00, 0x00])                          # jsr wait
-    c += bytes([0xE6, ZP_PTR + 1])                          # inc ptr hi
-    c += bytes([0xC6, ZP_CNT])                              # dec cnt
-    beq_done = len(c)
-    c += bytes([0xF0, 0x00])                                # beq done (patched)
-    c += bytes([0xE6, ZP_SEC, 0xA5, ZP_SEC, 0xC9, SECTORS + 1])  # inc sec : lda sec : cmp #18
-    c += bytes([0xD0, (rd - (here() + 2)) & 0xFF])          # bne rd
-    c += bytes([0xA9, 0x01, 0x85, ZP_SEC, 0xE6, ZP_TRK])    # sec = 1 : inc trk
-    c += bytes([0x4C, seek & 0xFF, seek >> 8])              # jmp seek
-    done = here()
-    c[beq_done + 1] = (done - (0x0500 + beq_done + 2)) & 0xFF
-    c += bytes([0x4C, 0x00, 0x06])                          # jmp $0600
-    wait = here()
-    c += bytes([0xA2, 0x10, 0xCA, 0xD0, 0xFD])              # short delay (busy settles)
-    wl = here()
-    c += bytes([0xAD, 0x10, 0x03, 0x29, 0x01])              # lda status : and #1
-    c += bytes([0xD0, (wl - (here() + 2)) & 0xFF])          # bne (busy)
-    c += bytes([0x60])                                      # rts
-    for pos in wait_calls:
-        c[pos + 1] = wait & 0xFF
-        c[pos + 2] = wait >> 8
-    return bytes(c)
 
 
 def crc16(data, crc=0xFFFF):
@@ -110,42 +59,59 @@ def mfm_track(track, sectors):
     return bytes(t + bytes([0x4E] * (TRACK_LEN - len(t))))
 
 
+def layout():
+    vals = {}
+    inc = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'disk.inc')
+    for line in open(inc):
+        p = line.split(';')[0].split('=')
+        if len(p) == 2 and p[0].strip().endswith('_TRACK'):
+            vals[p[0].strip()] = int(p[1].strip(), 0)
+    return vals
+
+
 def main():
-    out, scr_p, main_p, ovl_p = sys.argv[1:5]
-    scr, game, ovl = (open(p, 'rb').read() for p in (scr_p, main_p, ovl_p))
-    nsect = (len(ovl) + 255) // 256
+    out, scr_p, main_p, boot_p, ovl_p, menu_p, dash_p = sys.argv[1:8]
+    scr, game, boot, ovl, menu, dash = (open(p, 'rb').read()
+                                        for p in (scr_p, main_p, boot_p, ovl_p, menu_p, dash_p))
+    lay = layout()
     tap2dsk = os.environ.get('TAP2DSK', 'tap2dsk')
     with tempfile.TemporaryDirectory() as tmp:
-        # first pass: how many tracks do the Sedoric files need?
-        for attempt in range(2):
-            track0 = 0 if attempt == 0 else ntracks
-            stub = boot_stub(track0, nsect)
-            tap = os.path.join(tmp, 'disk.tap')
-            with open(tap, 'wb') as f:
-                f.write(tape_file('SCR', 0xA000, scr))
-                f.write(tape_file('GAME', 0x0600, game))
-                f.write(tape_file('BOOT', 0x0500, stub))
-            old = os.path.join(tmp, 'old.dsk')
-            subprocess.run([tap2dsk, '-iHIRES:LOAD"SCR.BIN":LOAD"GAME.BIN":LOAD"BOOT.BIN":CALL#500',
-                            '-nTURBO ESPRIT', tap, old], check=True, capture_output=True)
-            img = open(old, 'rb').read()
-            assert img[:8] == b'ORICDISK'
-            sides, ntracks, nsec = struct.unpack_from('<iii', img, 8)
-            assert sides == 1 and nsec == SECTORS
-        secs = [img[256 + i * 256:256 + (i + 1) * 256] for i in range(ntracks * SECTORS)]
-        # the overlay, raw, from track `ntracks` sector 1 on
-        ovl = ovl + bytes(nsect * 256 - len(ovl))
-        secs += [ovl[i * 256:(i + 1) * 256] for i in range(nsect)]
-        total = (len(secs) + SECTORS - 1) // SECTORS
-        secs += [bytes(256)] * (total * SECTORS - len(secs))
+        tap = os.path.join(tmp, 'disk.tap')
+        with open(tap, 'wb') as f:
+            f.write(tape_file('SCR', 0xA000, scr))
+            f.write(tape_file('GAME', 0x0600, game))
+            f.write(tape_file('BOOT', 0x0500, boot))
+        old = os.path.join(tmp, 'old.dsk')
+        subprocess.run([tap2dsk, '-iHIRES:LOAD"SCR.BIN":LOAD"GAME.BIN":LOAD"BOOT.BIN":CALL#500',
+                        '-nTURBO ESPRIT', tap, old], check=True, capture_output=True)
+        img = open(old, 'rb').read()
+    assert img[:8] == b'ORICDISK'
+    sides, ntracks, nsec = struct.unpack_from('<iii', img, 8)
+    assert sides == 1 and nsec == SECTORS
+    blobs = [(lay['OVL_TRACK'], ovl, 64), (lay['MENU_TRACK'], menu, None),
+             (lay['DASH_TRACK'], dash, None)]
+    total = max(t + ((len(d) + 255) // 256 + SECTORS - 1) // SECTORS for t, d, _ in blobs)
+    secs = [img[256 + i * 256:256 + (i + 1) * 256] for i in range(ntracks * SECTORS)]
+    secs += [bytes(256)] * (total * SECTORS - len(secs))
+    used = [False] * len(secs)
+    for t, d, maxs in blobs:
+        assert t >= ntracks, 'Sedoric files reach track %d' % ntracks
+        n = (len(d) + 255) // 256
+        assert maxs is None or n <= maxs
+        d = d + bytes(n * 256 - len(d))
+        for i in range(n):
+            k = t * SECTORS + i
+            assert not used[k], 'raw blobs overlap (src/disk.inc)'
+            used[k] = True
+            secs[k] = d[i * 256:(i + 1) * 256]
     hdr = b'MFM_DISK' + struct.pack('<iii', 1, total, 1)
     hdr += bytes(256 - len(hdr))
     disk = bytearray(hdr)
     for t in range(total):
         disk += mfm_track(t, secs[t * SECTORS:(t + 1) * SECTORS])
     open(out, 'wb').write(disk)
-    print('%s: %d tracks (Sedoric %d, overlay %d sectors from track %d)'
-          % (out, total, ntracks, nsect, ntracks))
+    print('%s: %d tracks (Sedoric files on %d, raw blobs at %s)'
+          % (out, total, ntracks, ', '.join('%d' % t for t, _, _ in blobs)))
 
 
 if __name__ == '__main__':

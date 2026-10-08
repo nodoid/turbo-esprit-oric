@@ -858,14 +858,15 @@ def gen(tape=None):
         delta[i] ^= flat[i - 40]
     comp = lz2_compress(bytes(delta))
     assert lz2_decompress(comp) == bytes(delta)
-    out += ['', '        .segment "RODATA"',
-            '        .export T_DASH, T_LAMPL, T_LAMPR',
+    out += ['', '        .segment "DASHBLOB"     ; loaded from disk at game start (src/disk.inc)',
+            '        .export T_DASH, T_LAMPL, T_LAMPR, T_DASH_END',
             '; static dashboard: Oric HIRES lines 100-179 (3200 bytes), each byte',
             '; xor the byte above (line 100 plain), LZ packed',
             '; (00llllll: literals; 01llllll d8: copy l+2 from d8+1; 1lllllll d16: copy l+3 from d16; 0 end)',
             '; %d pixels differ from the Spectrum colours' % errs,
             'T_DASH:']
     emit_bytes(out, comp)
+    out += ['T_DASH_END:', '        .segment "RODATA"']
     for key in ('L', 'R'):
         pl = lamp_patches(m, rows, key)
         out.append('; indicator lamp %s: (screen address, xor) - on <-> off, 0-terminated' % key)

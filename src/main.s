@@ -7,6 +7,7 @@
         .include "hw.inc"
         .include "zx.inc"
         .include "snd.inc"
+        .include "disk.inc"
 
         .import hw_init, view_init, any_key, gfx_cls, gfx_textinit
         ZIMPORT $A526
@@ -53,6 +54,7 @@
         .import T_EAB5          ; gear table
 
         .export Z_728D
+        .import __MENU_START__, __MENU_LAST__
 
         .segment "STARTUP"
 start:  sei
@@ -94,7 +96,31 @@ start:  sei
         cli
         jsr gfx_textinit
         jsr view_init
+        jsr menu_load
         jmp Z_FD11
+
+        .code
+; menu_load: (re)load the menu blob (menus, score tables, copyright screen;
+; linked to run at $5C00 in RAM the game uses while playing) from the disk
+menu_load:
+        lda #MENU_TRACK
+        sta D_TRK
+        lda #1
+        sta D_SEC
+        lda #>(__MENU_LAST__ - __MENU_START__ + 255)
+        sta D_CNT
+        lda #<__MENU_START__
+        sta D_DEST
+        lda #>__MENU_START__
+        sta D_DEST+1
+        jmp DREAD
+
+; play_game: the menu's PLAY/PRACTICE.  A, zc as for S7347.  The game
+; overwrites the menu blob, so it is loaded again before returning into it.
+        .export play_game
+play_game:
+        jsr Z_7347
+        jmp menu_load
 
         .code
 
@@ -365,6 +391,7 @@ L74A8:  jsr Z_BA5F
 @r:     rts
 
 ; ---------------------------------------------------------------------------
+        .segment "MCODE"
 ; S728D: the copyright screen shown at start-up.  The original printed two
 ; texts with the ROM's PR-STRING; the first (copyright notice) is shown here
 ; from the original data at $6DB7 (still in memory at this point): control

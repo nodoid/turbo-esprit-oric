@@ -83,7 +83,7 @@ g_lo:   .res 1                  ; columns [g_lo,g_hi) hidden
 g_hi:   .res 1
 lsave:  .res 1                  ; byte replaced by RTS in lchain
 
-        .segment "DATA"
+        .segment "DATA3"
 ; S893C variables (IX = $8813), kept like the original's
         ZLABEL $880F, 16
 v_objp:   .res 2                ; 880F
@@ -106,7 +106,7 @@ v_ax:     .res 1                ; 881E
 v_8F10: .word $8F12
 
 ; ---------------------------------------------------------------------------
-        .segment "RODATA"
+        .segment "RODATA3"
 LK:     .byte $00,$80,$C0,$E0,$F0,$F8,$FC,$FE     ; D87F7
 RKEEP:  .byte $00,$01,$03,$07,$0F,$1F,$3F,$7F     ; D8807
 ; lane probes of 881F in scan order: (lag, lateral) and map offset
@@ -120,7 +120,7 @@ T_8F12: .byte $06,$88,$08,$89,$28,$82,$08,$8B,$08,$88,$08,$98,$28,$28,$08,$B8,$8
         .include "objects_data.s"
 
 ; ---------------------------------------------------------------------------
-        .code
+        .segment "CODE3"
 
 ; ===========================================================================
 ; S876F: fill the buildings down from their roof lines and colour the top 4
@@ -263,9 +263,9 @@ probes:
         bne probes
         rts
 
-        .segment "RODATA"
+        .segment "RODATA3"
 ptab:   .byte 0, 10, 20, 30, 40, 50, 60, 70
-        .code
+        .segment "CODE3"
 
 ; A = map code, Y = probe number; X preserved
 hit:    stx s_i
@@ -1135,7 +1135,7 @@ stride: adc #0
         sta lchain,x
 :       rts
 
-        .segment "RODATA"
+        .segment "RODATA3"
 mul5:   .byte 0, 5, 10, 15, 20, 25, 30
 mul9:   .byte 0, 9, 18, 27, 36, 45, 54
 lpos:   .byte 2, 4, 6, 8, 10, 12        ; lchain offset after position 5-W
@@ -1163,7 +1163,7 @@ RTT:    .repeat 89, i
         .endif
         .endrep
 RT0 = RTT + 40
-        .code
+        .segment "CODE3"
 
 ; setfetch: A = fetch variant (0/1 plain o=0/1, 2/3 mirrored) -> fj, vfetch
 setfetch:
@@ -1589,8 +1589,8 @@ L8EF9:  tax
         cpx #4
         bne @seg
         rts
-        .segment "RODATA"
+        .segment "RODATA3"
 lmp_lo: .byte <(ZV_BDE2), <(ZV_BE05-3), <(ZV_BE45-8), <(ZV_BEA3-23)
 lmp_hi: .byte >(ZV_BDE2), >(ZV_BE05-3), >(ZV_BE45-8), >(ZV_BEA3-23)
 lmp_end:.byte 3, 8, 23, 38
-        .code
+        .segment "CODE3"

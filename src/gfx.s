@@ -139,7 +139,7 @@ fs_ph:  .res FSTK
 fs_y:   .res FSTK
 fs_m:   .res FSTK
 
-        .segment "RODATA"
+        .segment "RODATAH1"
 ; x>>1 -> (x>>1)/3 << 2 | (x>>1) mod 3  (Oric column / offset of pixel x+6)
 divtab:
         .repeat 128, I
